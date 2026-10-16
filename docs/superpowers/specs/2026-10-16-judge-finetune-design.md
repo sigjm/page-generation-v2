@@ -91,6 +91,8 @@
 
 ## 6. 평가 (`scripts/finetune/eval_judge.py`)
 
+> LangSmith 적용 스펙(`2026-10-16-langchain-adoption-design.md` §4)에 따라, API 키가 있으면 같은 평가를 LangSmith 데이터셋·실험으로도 기록한다. 아래 로컬 지표와 합격 기준은 그대로다.
+
 - 입력: 평가셋 150문장(Claude 검토 정답), `--model`.
 - 문장 단위로 런타임과 같은 `agent.judge`를 부른다(같은 프롬프트·스키마·max_tokens·재시도).
 - 지표: 근거 없는 문장 정밀도·재현율·F1, 근거 있는·분위기 문장을 거른 비율, 판정 실패(LLMError) 수, 평균 지연.
