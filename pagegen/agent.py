@@ -1,5 +1,6 @@
 """Chat turns (tool calls, spec §4.2) and the first draft (fixed order, spec §4.1). `llm` is injectable for tests."""
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from .llm import LLMError
 MAX_ROUNDS = 4
 HISTORY = 12  # the last 6 turns, user + assistant
 MUTATING = {"update_text", "edit_photo", "use_photo", "add_section", "remove_section", "move_section"}
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 def basis_of(page: dict, chat: list[dict]) -> str:
@@ -29,10 +31,19 @@ def judge(llm, text: str, basis: str) -> list[str]:
             if p.get("type") != "mood" and p.get("supported") is not True]
 
 
+def _sentences(line: str) -> list[str]:
+    return [s for s in _SENTENCE_END.split(line.strip()) if s]
+
+
+def unsupported(llm, text: str, basis: str) -> list[str]:
+    """Judge one sentence per call: the 9B misses claims buried in longer text (seen in real drafts)."""
+    return [f for line in text.splitlines() for s in _sentences(line) for f in judge(llm, s, basis)]
+
+
 def _verifier(llm, basis: str) -> Callable[[str], None]:
     def verify(text: str) -> None:
         try:
-            flagged = judge(llm, text, basis)
+            flagged = unsupported(llm, text, basis)
         except LLMError:
             raise pg.ToolError("오류: 주장 검사를 하지 못해 반영하지 않았습니다.") from None
         if flagged:
@@ -163,17 +174,21 @@ def build_sections(copy: dict, analysis: dict, name: str) -> tuple[list[dict], s
 
 
 def _clean(section: dict, corpus: str, basis: str, name: str, llm) -> None:
-    """Spec §4.1-6 for one model-written section: drop or replace whatever fails the number or claim check."""
-    if pg.unsupported_numbers(section["headline"], corpus):
+    """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check."""
+    def passes(text: str) -> bool:
+        return not pg.unsupported_numbers(text, corpus) and not judge(llm, text, basis)
+
+    if not passes(section["headline"]):
         section["headline"] = name
-    lines = [line for line in section["body"].splitlines() if line.strip() and not pg.unsupported_numbers(line, corpus)]
-    headline = section["headline"]
-    flagged = judge(llm, "\n".join([headline, *lines]), basis)
-    located = all(f in headline or any(f in line for line in lines) for f in flagged)
-    if any(f in headline for f in flagged):
-        section["headline"] = name
-    kept = [line for line in lines if not any(f in line for f in flagged)]
-    section["body"] = "\n".join(kept) if located else ""  # a phrase the judge reworded can't be located: drop it all
+    lines = []
+    for line in section["body"].splitlines():
+        sentences = _sentences(line)
+        kept = [s for s in sentences if passes(s)]
+        if section["kind"] == "points" and len(kept) < len(sentences):
+            continue  # a point cut in half loses its title or its meaning: drop the whole point
+        if kept:
+            lines.append(" ".join(kept))
+    section["body"] = "\n".join(lines)
 
 
 def _has_content(section: dict) -> bool:

@@ -186,22 +186,38 @@ COPY = {"hero": {"headline": "하루 종일 따뜻하게", "body": "이중 진�
             {"title": "넉넉한 용량", "text": "500ml"}, {"title": "가벼움", "text": "350g 초경량"},
             {"title": "보냉", "text": "차갑게도 유지"}]},
         "scene": {"headline": "어디서나", "body": "", "photo_instruction": "원목 식탁 위"},
-        "notice": {"headline": "", "body": ""}}
-PRODUCT = {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 500ml, 색상 3종"}
+        "notice": {"headline": "관리", "body": "중성세제로 씻어 주세요. 습기에 주의하세요."}}
+PRODUCT = {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 500ml, 색상 3종. 중성세제로 씻어 주세요"}
 
 
-def draft(folder, jsons, edit=b"png"):
-    fake = FakeLLM(jsons=jsons, edit=edit)
+class JudgeByContent(FakeLLM):
+    """Analysis and copy are scripted; every judge call flags the text when it contains a `bad` phrase."""
+
+    def __init__(self, scripted, bad=(), fail=False, edit=b"png"):
+        super().__init__(jsons=scripted, edit=edit)
+        self.bad, self.fail, self.judged = bad, fail, []
+
+    def chat_json(self, messages, schema, **kw):
+        if self.jsons:
+            return super().chat_json(messages, schema, **kw)
+        if self.fail:
+            raise LLMError("down")
+        text = messages[1]["content"].split("새 문구: ", 1)[1]
+        self.judged.append(text)
+        return flag(text) if any(b in text for b in self.bad) else OK
+
+
+def draft(folder, bad=(), fail=False, edit=b"png", scripted=None):
+    fake = JudgeByContent([ANALYSIS, COPY] if scripted is None else scripted, bad=bad, fail=fail, edit=edit)
     photos = [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}]
     page, message = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
     return page, message, fake
 
 
 def test_draft_assembles_cleans_and_edits_scene(folder):
-    # judge calls run per section in order: hero, points, scene (empty notice is dropped before judging)
-    page, message, fake = draft(folder, [ANALYSIS, COPY, OK, flag("차갑게도 유지"), OK])
+    page, message, fake = draft(folder, bad=["차갑게"])
     assert [(s["id"], s["kind"]) for s in page["sections"]] == [
-        ("s1", "hero"), ("s2", "points"), ("s3", "scene"), ("s4", "spec_table")]
+        ("s1", "hero"), ("s2", "points"), ("s3", "scene"), ("s4", "spec_table"), ("s5", "notice")]
     assert page["sections"][1]["body"] == "넉넉한 용량: 500ml"  # 350g had no source, 보냉 was flagged
     assert page["sections"][3]["body"] == "용량: 500ml"  # the 350g fact was not in the notes
     assert page["analysis"]["facts"] == [{"key": "용량", "value": "500ml"}]
@@ -210,33 +226,51 @@ def test_draft_assembles_cleans_and_edits_scene(folder):
     assert page["version"] == 1 and page["product"] == PRODUCT
     assert "무게는 얼마인가요?" in message["text"] and message["role"] == "assistant"
     assert fake.json_calls[0][1]["content"][0]["type"] == "image_url"
-    assert len(fake.json_calls) == 5
+    assert "가벼움: 350g 초경량" not in fake.judged  # number check runs first, no judge call wasted
+
+
+def test_draft_judges_sentence_by_sentence(folder):
+    page, _, fake = draft(folder, bad=["습기에 주의"])
+    assert page["sections"][-1]["body"] == "중성세제로 씻어 주세요."  # only the unsourced sentence goes
+    assert "중성세제로 씻어 주세요." in fake.judged and "습기에 주의하세요." in fake.judged
 
 
 def test_draft_flagged_headline_becomes_product_name(folder):
-    page, _, _ = draft(folder, [ANALYSIS, COPY, flag("하루 종일 따뜻하게"), OK, OK])
+    page, _, _ = draft(folder, bad=["하루 종일 따뜻하게"])
     assert page["sections"][0]["headline"] == "스테인리스 텀블러"
+    assert page["sections"][0]["body"] == "이중 진공 단열 텀블러"
 
 
-def test_draft_unlocatable_phrase_drops_the_body(folder):
-    page, _, _ = draft(folder, [ANALYSIS, COPY, OK, flag("보냉 기능"), OK])
-    assert [s["kind"] for s in page["sections"]] == ["hero", "scene", "spec_table"]
+def test_draft_point_with_any_flagged_part_is_dropped(folder):
+    copy = {**COPY, "points": {"headline": "이래서 좋아요", "items": [
+        {"title": "넉넉한 용량", "text": "500ml. 손으로 하나하나 만들었어요."}]}}
+    page, _, _ = draft(folder, bad=["손으로"], scripted=[ANALYSIS, copy])
+    assert all(s["kind"] != "points" for s in page["sections"])  # no half-points without their title
 
 
 def test_draft_judge_failure_means_no_draft(folder):
     with pytest.raises(LLMError):
-        draft(folder, [ANALYSIS, COPY, LLMError("down")])
+        draft(folder, fail=True)
 
 
 def test_draft_scene_edit_failure_keeps_original(folder):
-    page, _, _ = draft(folder, [ANALYSIS, COPY, OK, OK, OK], edit=LLMError("timeout"))
+    page, _, _ = draft(folder, edit=LLMError("timeout"))
     scene = next(s for s in page["sections"] if s["kind"] == "scene")
     assert scene["photo"] == "p1" and len(page["photos"]) == 1
 
 
 def test_draft_broken_analysis_raises(folder):
     with pytest.raises(LLMError):
-        draft(folder, [LLMError("JSON 두 번 실패")])
+        draft(folder, scripted=[LLMError("JSON 두 번 실패")])
+
+
+def test_chat_verify_judges_each_sentence(page, folder):
+    text = "온종일 든든한 텀블러. 차가운 음료도 시원하게."
+    fake = JudgeByContent([], bad=["차가운"])
+    fake.chats = [{"tool_calls": [call("update_text", section_id="s1", field="body", text=text)]}, {"content": "뺐어요."}]
+    reply, changed = agent.chat_turn(folder, page, [], "본문 바꿔줘", fake)
+    assert not changed and "차가운 음료도 시원하게." in reply["tools"][0]["result"]
+    assert fake.judged == ["온종일 든든한 텀블러.", "차가운 음료도 시원하게."]
 
 
 def test_normalize_analysis_tolerates_junk():
