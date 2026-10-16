@@ -4,7 +4,7 @@ from html import escape
 from pathlib import Path
 import shutil
 
-from .page import KINDS, split_line
+from .page import KINDS, VARIANTS, split_line
 
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
@@ -28,6 +28,29 @@ section[data-kind=spec_table] th,section[data-kind=spec_table] td{padding:18px 8
 section[data-kind=spec_table] th{width:30%;color:#6e6e73;font-weight:500}
 section[data-kind=notice]{background:#f5f5f7;text-align:left}
 section[data-kind=notice] p{font-size:17px;color:#555;line-height:1.7}
+.hero-media{position:relative}
+section[data-variant=overlay] .hero-copy{position:absolute;left:0;right:0;bottom:0;padding:140px 0 48px;background:linear-gradient(transparent,rgba(0,0,0,.6))}
+section[data-variant=overlay] .hero-copy h1{margin:0 64px 12px;color:#fff}
+section[data-variant=overlay] .hero-copy p{color:#eee}
+section[data-kind=banner]{padding:96px 64px}
+section[data-kind=banner] h2{font-size:36px;line-height:1.4;margin:0}
+section[data-kind=banner] p{margin-top:16px;font-size:18px;color:#555}
+section[data-variant=dark]{background:#121B29;color:#fff}
+section[data-variant=dark] p{color:#d0d4da}
+section[data-variant=numbered] ul{counter-reset:item}
+section[data-variant=numbered] li{counter-increment:item;position:relative;padding-left:104px}
+section[data-variant=numbered] li::before{content:counter(item,decimal-leading-zero);position:absolute;left:32px;top:26px;font-size:34px;font-weight:700;color:#0a66ff}
+section[data-kind=split]{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;text-align:left}
+section[data-variant=image-right] .split-photo{order:2}
+.split-photo{aspect-ratio:1;background:#f5f5f7;border-radius:16px;overflow:hidden}
+.split-photo img{width:100%;height:100%;object-fit:contain}
+.split-text h2{font-size:28px;margin-bottom:16px}
+.split-text p{font-size:18px;color:#555;line-height:1.7}
+section[data-kind=gallery] .grid{display:grid;gap:12px;grid-template-columns:1fr}
+section[data-variant=grid-2] .grid{grid-template-columns:1fr 1fr}
+section[data-variant=grid-3] .grid{grid-template-columns:1fr 1fr 1fr}
+section[data-kind=gallery] .grid[data-count="1"]{grid-template-columns:1fr}
+section[data-variant=grid-2] img,section[data-variant=grid-3] img{aspect-ratio:1;object-fit:contain;background:#f5f5f7;border-radius:12px}
 """
 
 
@@ -35,20 +58,29 @@ def _lines(body: str) -> list[str]:
     return [line for line in body.splitlines() if line.strip()]
 
 
+def _img(photos: dict[str, str], photo_id, photo_url) -> str:
+    return f'<img src="{escape(photo_url(photos[photo_id]))}" alt="">' if photo_id in photos else ""
+
+
 def _section(section: dict, photos: dict[str, str], photo_url: Callable[[str], str]) -> str:
     kind = section["kind"] if section["kind"] in KINDS else "notice"
-    headline = escape(section["headline"])
-    body = section["body"]
-    image = ""
-    photo_id = section.get("photo")
-    if kind in ("hero", "scene") and photo_id in photos:
-        src = escape(photo_url(photos[photo_id]))
-        image = f'<img src="{src}" alt="">'
-
+    allowed = VARIANTS.get(kind)
+    variant = (section.get("variant") if section.get("variant") in allowed else allowed[0]) if allowed else None
+    headline, body = escape(section["headline"]), section["body"]
+    image = _img(photos, section.get("photo"), photo_url)
     if kind == "hero":
-        inner = f"{image}<h1>{headline}</h1><p>{escape(body)}</p>"
+        inner = f'<div class="hero-media">{image}<div class="hero-copy"><h1>{headline}</h1><p>{escape(body)}</p></div></div>'
+    elif kind == "banner":
+        inner = f"<h2>{headline}</h2>" + (f"<p>{escape(body)}</p>" if body.strip() else "")
+    elif kind == "split":
+        inner = (f'<div class="split-photo">{image}</div>'
+                 f'<div class="split-text"><h2>{headline}</h2><p>{escape(body)}</p></div>')
     elif kind == "scene":
         inner = f"{image}<h2>{headline}</h2><p>{escape(body)}</p>"
+    elif kind == "gallery":
+        images = [_img(photos, pid, photo_url) for pid in section.get("photos", [])]
+        images = [image for image in images if image]
+        inner = f'<h2>{headline}</h2><div class="grid" data-count="{len(images)}">{"".join(images)}</div>'
     elif kind == "points":
         items = "".join(
             f"<li><strong>{escape(key)}</strong><span>{escape(value)}</span></li>"
@@ -57,15 +89,13 @@ def _section(section: dict, photos: dict[str, str], photo_url: Callable[[str], s
         inner = f"<h2>{headline}</h2><ul>{items}</ul>"
     elif kind == "spec_table":
         rows = "".join(
-            f"<tr><th>{escape(key)}</th><td>{escape(value)}</td></tr>"
-            for key, value in map(split_line, _lines(body))
+            f"<tr><th>{escape(key)}</th><td>{escape(value)}</td></tr>" for key, value in map(split_line, _lines(body))
         )
         inner = f"<h2>{headline}</h2><table>{rows}</table>"
     else:
-        paragraphs = "".join(f"<p>{escape(line)}</p>" for line in _lines(body))
-        inner = f"<h2>{headline}</h2>{paragraphs}"
-
-    return f'<section data-section-id="{escape(section["id"])}" data-kind="{kind}">{inner}</section>'
+        inner = f"<h2>{headline}</h2>" + "".join(f"<p>{escape(line)}</p>" for line in _lines(body))
+    attrs = f'data-section-id="{escape(section["id"])}" data-kind="{kind}"' + (f' data-variant="{variant}"' if variant else "")
+    return f"<section {attrs}>{inner}</section>"
 
 
 def render_html(page: dict, photo_url: Callable[[str], str]) -> str:

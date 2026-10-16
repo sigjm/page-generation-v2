@@ -67,3 +67,39 @@ def test_export_png_jpg_and_sections(page, tmp_path):
         "02-points.png",
         "03-notice.png",
     ]
+
+
+def add(page, **section):
+    page["sections"].append(section)
+    return page
+
+
+def test_variant_attribute_and_default(page):
+    page["sections"][0]["variant"] = "nope"  # unknown → default
+    html = html_of(add(page, id="s4", kind="scene", headline="장면", body="", photo="p1"))
+    assert '<section data-section-id="s1" data-kind="hero" data-variant="below">' in html
+    assert '<section data-section-id="s4" data-kind="scene">' in html  # kinds without variants get no attribute
+    assert 'data-kind="points" data-variant="cards"' in html  # old page.json without variant still renders
+
+
+def test_split_and_banner(page):
+    add(page, id="s4", kind="split", variant="image-right", headline="한 손으로", body="누르면 열려요", photo="p1")
+    add(page, id="s5", kind="banner", variant="dark", headline="<식은 커피>", body="")
+    html = html_of(page)
+    assert 'data-kind="split" data-variant="image-right"' in html and 'class="split-photo"' in html
+    assert 'data-kind="banner" data-variant="dark"' in html and "&lt;식은 커피&gt;" in html
+
+
+def test_gallery_renders_known_photos_only(page):
+    html = html_of(add(page, id="s4", kind="gallery", variant="grid-3", headline="더 많은 모습", body="",
+                       photos=["p1", "p9"]))
+    gallery = html[html.index('data-kind="gallery"'):]
+    assert gallery.count("<img") == 1 and 'data-count="1"' in gallery
+
+
+def test_numbered_points_and_overlay_hero(page):
+    page["sections"][0]["variant"] = "overlay"
+    page["sections"][1]["variant"] = "numbered"
+    html = html_of(page)
+    assert 'data-variant="overlay"' in html and 'class="hero-copy"' in html
+    assert 'data-kind="points" data-variant="numbered"' in html
