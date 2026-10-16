@@ -31,6 +31,10 @@
   iframe { width: 860px; height: 100%; border: 0; background: #fff; }
   #empty { margin: auto; color: var(--muted); }
   #links a { display: block; font-size: 13px; }
+  #picked { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+  #picked li { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #picked button { padding: 2px 8px; font-size: 12px; }
+  .hint { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -38,10 +42,12 @@
   <div id="log"></div>
   <div id="busy">작업 중이에요… 사진 편집이 들어가면 1분 정도 걸려요.</div>
   <form id="start">
-    <input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
+    <input type="file" accept="image/jpeg,image/png,image/webp" multiple>
+    <span class="hint">사진은 최대 6장. 여러 번 골라도 차례로 쌓여요.</span>
+    <ul id="picked"></ul>
     <input type="text" name="name" placeholder="상품명" required>
     <textarea name="notes" placeholder="상품 설명 (용량, 소재, 관리 방법 등 아는 것을 자유롭게)"></textarea>
-    <button>초안 만들기</button>
+    <button type="submit">초안 만들기</button>
   </form>
   <form id="chat" hidden>
     <textarea name="text" placeholder="예: 헤드라인을 더 짧게 / 배경을 대리석으로" required></textarea>
@@ -60,7 +66,9 @@
 </main>
 <script>
 const $ = (selector) => document.querySelector(selector);
+const MAX_PHOTOS = 6;
 let projectId = location.hash.slice(1);
+let picked = [];  // a file input replaces its selection on every pick (and some pickers allow one file): keep our own list
 
 function addMessage(m) {
   const div = document.createElement("div");
@@ -110,10 +118,41 @@ function openProject(id, chat, version) {
   showPreview(version);
 }
 
+function renderPicked() {
+  $("#picked").replaceChildren(...picked.map((file, i) => {
+    const li = document.createElement("li");
+    li.textContent = file.name;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "빼기";
+    remove.addEventListener("click", () => { picked.splice(i, 1); renderPicked(); });
+    li.appendChild(remove);
+    return li;
+  }));
+}
+
+$("#start input[type=file]").addEventListener("change", (ev) => {
+  let skipped = false;
+  for (const file of ev.target.files) {
+    const same = picked.some((f) => f.name === file.name && f.size === file.size && f.lastModified === file.lastModified);
+    if (same) continue;
+    if (picked.length < MAX_PHOTOS) picked.push(file); else skipped = true;
+  }
+  ev.target.value = "";  // so the next pick fires change even for the same file
+  renderPicked();
+  if (skipped) showError(new Error(`사진은 ${MAX_PHOTOS}장까지 올릴 수 있어요.`));
+});
+
 $("#start").addEventListener("submit", async (ev) => {
   ev.preventDefault();
+  if (!picked.length) { showError(new Error("사진을 1장 이상 골라 주세요.")); return; }
+  const form = new FormData();
+  form.append("name", ev.target.elements.name.value);
+  form.append("notes", ev.target.elements.notes.value);
+  picked.forEach((file) => form.append("photos", file));
   try {
-    const data = await call("/projects", { method: "POST", body: new FormData(ev.target) });
+    const data = await call("/projects", { method: "POST", body: form });
     openProject(data.id, data.messages, data.version);
   } catch (e) { showError(e); }
 });
