@@ -1,0 +1,178 @@
+import json
+
+import pytest
+
+from pagegen import agent
+from pagegen.llm import LLMError
+
+OK = {"phrases": []}
+
+
+def call(name, **args):
+    return {"id": f"c-{name}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}}
+
+
+def flag(phrase):
+    return {"phrases": [{"phrase": phrase, "type": "fact", "supported": False}]}
+
+
+class FakeLLM:
+    """Scripted stand-in for pagegen.llm: pops one reply per call, raises replies that are exceptions."""
+
+    def __init__(self, chats=(), jsons=(), edit=b"\x89PNG fake"):
+        self.chats, self.jsons, self.edit = list(chats), list(jsons), edit
+        self.chat_calls, self.json_calls = [], []
+
+    def chat(self, messages, **kw):
+        self.chat_calls.append(json.loads(json.dumps(messages)))
+        return self.chats.pop(0)
+
+    def chat_json(self, messages, schema, **kw):
+        self.json_calls.append(messages)
+        reply = self.jsons.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def edit_image(self, file, instruction):
+        if isinstance(self.edit, Exception):
+            raise self.edit
+        return self.edit
+
+    def model_jpeg(self, file):
+        return b"jpeg"
+
+    def image_part(self, jpeg):
+        return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"}}
+
+
+@pytest.fixture
+def folder(tmp_path):
+    (tmp_path / "photos").mkdir()
+    return tmp_path
+
+
+def test_update_text_then_reply(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="headline", text="온종일 따뜻")]},
+                          {"content": "헤드라인을 줄였어요."}], jsons=[OK])
+    chat = []
+    reply, changed = agent.chat_turn(folder, page, chat, "헤드라인 짧게", fake)
+    assert changed and page["sections"][0]["headline"] == "온종일 따뜻"
+    assert reply == {"role": "assistant", "text": "헤드라인을 줄였어요.", "tools": [
+        {"name": "update_text", "args": {"section_id": "s1", "field": "headline", "text": "온종일 따뜻"},
+         "ok": True, "result": "s1 headline 변경"}]}
+    assert [m["role"] for m in chat] == ["user", "assistant"]
+    assert fake.chat_calls[0][0]["role"] == "system" and '"s1"' in fake.chat_calls[0][0]["content"]
+
+
+def test_tool_error_goes_back_to_model(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("remove_section", section_id="s9")]}, {"content": "없는 섹션이었어요."}])
+    _, changed = agent.chat_turn(folder, page, [], "지워", fake)
+    assert not changed
+    tool_message = fake.chat_calls[1][-1]
+    assert tool_message["role"] == "tool" and "없는 섹션 s9" in tool_message["content"]
+
+
+def test_ask_user_ends_turn(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("ask_user", question="무게는 얼마인가요?"),
+                                          call("remove_section", section_id="s3")]}])
+    reply, changed = agent.chat_turn(folder, page, [], "무게도 적어줘", fake)
+    assert reply["text"] == "무게는 얼마인가요?" and len(fake.chat_calls) == 1
+    assert not changed and len(page["sections"]) == 3  # calls after ask_user do not run
+
+
+def test_round_cap(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("remove_section", section_id="s9")]}] * 4)
+    reply, _ = agent.chat_turn(folder, page, [], "x", fake)
+    assert reply["text"] == "여기까지 반영했어요." and len(fake.chat_calls) == 4
+
+
+def test_unsourced_number_rejected_without_judge(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="body", text="350g 초경량")]},
+                          {"content": "확인이 필요해요."}])
+    _, changed = agent.chat_turn(folder, page, [], "가볍다고 써줘", fake)
+    assert not changed and fake.json_calls == []
+
+
+def test_number_said_by_user_is_allowed(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="body", text="350g 가벼운 무게")]},
+                          {"content": "반영했어요."}], jsons=[OK])
+    _, changed = agent.chat_turn(folder, page, [], "무게 350g이라고 써줘", fake)
+    assert changed
+
+
+def test_judge_flag_rejects(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="headline", text="따뜻하고 차갑게")]},
+                          {"content": "뺐어요."}], jsons=[flag("차갑게")])
+    reply, changed = agent.chat_turn(folder, page, [], "x", fake)
+    assert not changed and "근거 없는 주장 '차갑게'" in reply["tools"][0]["result"]
+
+
+def test_judge_failure_is_fail_closed(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="headline", text="따뜻하게")]},
+                          {"content": "실패했어요."}], jsons=[LLMError("down")])
+    reply, changed = agent.chat_turn(folder, page, [], "x", fake)
+    assert not changed and "주장 검사를 하지 못해" in reply["tools"][0]["result"]
+
+
+def test_judge_sees_user_message_and_photo_basis(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s2", field="body", text="식기세척기 사용 가능")]},
+                          {"content": "넣었어요."}], jsons=[OK])
+    agent.chat_turn(folder, page, [], "식기세척기 사용 가능하다고 써줘", fake)
+    basis = fake.json_calls[0][1]["content"]
+    assert "식기세척기 사용 가능하다고 써줘" in basis and "원터치 뚜껑" in basis
+
+
+def test_malformed_arguments_are_a_tool_error(page, folder):
+    bad = {"id": "c1", "type": "function", "function": {"name": "update_text", "arguments": "{section_id: s1"}}
+    fake = FakeLLM(chats=[{"tool_calls": [bad]}, {"content": "다시 할게요."}])
+    reply, changed = agent.chat_turn(folder, page, [], "x", fake)
+    assert not changed and "인자 JSON" in reply["tools"][0]["result"]
+
+
+def test_missing_argument(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="body")]}, {"content": "."}])
+    reply, _ = agent.chat_turn(folder, page, [], "x", fake)
+    assert "인자 text가 빠졌습니다" in reply["tools"][0]["result"]
+
+
+def test_unknown_tool(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("delete_everything")]}, {"content": "."}])
+    reply, _ = agent.chat_turn(folder, page, [], "x", fake)
+    assert "없는 도구 delete_everything" in reply["tools"][0]["result"]
+
+
+def test_edit_photo_writes_new_file_from_upload(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("edit_photo", section_id="s1", instruction="밝은 주방")]},
+                          {"content": "바꿨어요."}])
+    _, changed = agent.chat_turn(folder, page, [], "배경 주방으로", fake)
+    assert changed and page["sections"][0]["photo"] == "p1-e2"
+    assert (folder / "photos/p1-e2.png").read_bytes() == fake.edit
+
+
+def test_edit_photo_failure_keeps_photo(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("edit_photo", section_id="s1", instruction="주방")]},
+                          {"content": "실패했어요."}], edit=LLMError("timeout"))
+    reply, changed = agent.chat_turn(folder, page, [], "배경 주방으로", fake)
+    assert not changed and page["sections"][0]["photo"] == "p1-e1"
+    assert "사진 편집에 실패" in reply["tools"][0]["result"]
+
+
+def test_text_model_error_propagates(page, folder):
+    class Down(FakeLLM):
+        def chat(self, messages, **kw):
+            raise LLMError("모델 서버 오류: 연결 거부")
+
+    with pytest.raises(LLMError):
+        agent.chat_turn(folder, page, [], "x", Down())
+
+
+def test_history_is_last_six_turns_text_only(page, folder):
+    chat = [{"role": r, "text": f"{r}{i}", "tools": []} for i in range(10) for r in ("user", "assistant")]
+    fake = FakeLLM(chats=[{"content": "네"}])
+    reply, changed = agent.chat_turn(folder, page, chat, "고마워", fake)
+    sent = fake.chat_calls[0]
+    assert len(sent) == 1 + 12 + 1
+    assert sent[1] == {"role": "user", "content": "user4"} and sent[-1] == {"role": "user", "content": "고마워"}
+    assert reply["text"] == "네" and not changed
