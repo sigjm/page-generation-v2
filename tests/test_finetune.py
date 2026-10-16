@@ -56,3 +56,25 @@ def test_sft_row_uses_runtime_messages_and_compact_json():
     system, user, assistant = row["messages"]
     assert user["content"].endswith("\n새 문구: 냉장 보관하세요.") and user["content"].startswith("근거 텍스트: 감귤 주스")
     assert assistant["content"] == '{"phrases":[{"phrase":"냉장 보관하세요","type":"fact","supported":false}]}'
+
+
+from scripts.finetune import eval_judge as ej
+
+
+def test_metrics_count_failures_as_flagged():
+    results = [{"gold": True, "pred": True, "failed": False}, {"gold": True, "pred": False, "failed": False},
+               {"gold": False, "pred": False, "failed": False}, {"gold": False, "pred": True, "failed": True}]
+    m = ej.metrics(results)
+    assert (m["precision"], m["recall"]) == (0.5, 0.5)
+    assert m["f1"] == 0.5 and m["false_flag_rate"] == 0.5 and m["failures"] == 1
+
+
+def test_langsmith_logging_needs_a_key(monkeypatch):
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    assert ej.log_to_langsmith([], [], "m") is None
+
+
+def test_dataset_name_changes_with_the_labels():
+    a = [{"id": "x", "flagged": True}]
+    b = [{"id": "x", "flagged": False}]
+    assert ej.dataset_name(a) != ej.dataset_name(b) and ej.dataset_name(a).startswith("pagegen-judge-eval-")
