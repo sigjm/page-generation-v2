@@ -1,4 +1,5 @@
 import http.client
+import json
 import io
 import urllib.error
 
@@ -135,6 +136,8 @@ REQUEST = httpx.Request("POST", "http://127.0.0.1:11234/v1/chat/completions")
      "모델 서버 오류: 400 PrefillDoesNotFit"),
     (openai.APIConnectionError(request=REQUEST), "모델 서버 오류"),
     (openai.APITimeoutError(request=REQUEST), "모델 서버 오류"),
+    (ValueError("model not loaded"), "모델 서버 오류"),  # 200 with {"error": …}
+    (TypeError("'NoneType' object is not iterable"), "모델 서버 오류"),  # 200 without choices
 ])
 def test_api_errors_become_llm_error(monkeypatch, error, message):
     use(monkeypatch, FakeModel(None, error=error))
@@ -179,3 +182,29 @@ def test_edit_image_request_shape(monkeypatch, tmp_path):
 
 def test_judge_model_defaults_to_text_model():
     assert llm.JUDGE_MODEL == llm.TEXT_MODEL  # JUDGE_MODEL is not set in tests
+
+
+def test_history_with_broken_tool_arguments_reaches_the_server(monkeypatch):
+    """Through the real ChatOpenAI input conversion: a raw, unparsable arguments string in the history must not crash."""
+    from langchain_openai import ChatOpenAI
+    from pagegen import prompts
+
+    sent = {}
+
+    def handler(request):
+        sent["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "다시 할게요."}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+    monkeypatch.setattr(llm, "chat_model", lambda **kw: ChatOpenAI(
+        base_url="http://mlx.test/v1", api_key="local", model="m", max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))))
+    history = [{"role": "user", "content": "x"},
+               {"role": "assistant", "content": "", "tool_calls": [
+                   {"id": "c1", "type": "function", "function": {"name": "update_text", "arguments": "{section_id: s1"}}]},
+               {"role": "tool", "tool_call_id": "c1", "content": "오류: 인자 JSON을 읽을 수 없습니다."}]
+    assert llm.chat(history, tools=prompts.TOOLS)["content"] == "다시 할게요."
+    call = sent["body"]["messages"][1]["tool_calls"][0]
+    assert call["function"] == {"name": "update_text", "arguments": "{section_id: s1"}

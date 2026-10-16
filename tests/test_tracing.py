@@ -36,3 +36,32 @@ def test_server_turns_tracing_off_by_default(monkeypatch):
     monkeypatch.setenv("PAGEGEN_TRACE", "1")
     importlib.reload(server)
     assert os.environ["LANGSMITH_TRACING"] == "true"
+
+
+TRACING_VARS = ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING")
+
+
+def unset(monkeypatch, *names):
+    for name in names:  # setenv first so monkeypatch restores the variable as absent afterwards
+        monkeypatch.setenv(name, "x")
+        monkeypatch.delenv(name)
+
+
+def test_server_turns_every_tracing_variable_off(monkeypatch):
+    import langsmith.utils as lu
+    from pagegen import server
+    for name in TRACING_VARS:
+        monkeypatch.setenv(name, "true")
+    monkeypatch.delenv("PAGEGEN_TRACE", raising=False)
+    importlib.reload(server)
+    lu.get_env_var.cache_clear()
+    assert all(os.environ[name] == "false" for name in TRACING_VARS) and not lu.tracing_is_enabled()
+
+
+def test_pagegen_trace_turns_app_tracing_on(monkeypatch):
+    from pagegen import server
+    unset(monkeypatch, *TRACING_VARS, "LANGSMITH_PROJECT")
+    monkeypatch.setenv("PAGEGEN_TRACE", "1")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    importlib.reload(server)
+    assert os.environ["LANGSMITH_TRACING"] == "true" and os.environ["LANGSMITH_PROJECT"] == "pagegen-app"

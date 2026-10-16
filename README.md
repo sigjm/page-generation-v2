@@ -18,7 +18,7 @@ uv run python -m pagegen.server
 
 ## 설정 (환경 변수)
 
-`MLX_URL`, `TEXT_MODEL`, `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR`, `PAGEGEN_TRACE`(1이면 앱도 LangSmith 추적), `LANGSMITH_API_KEY`·`LANGSMITH_PROJECT`(`.env`) — 기본값은 설계 문서 §2를 참고하세요.
+`MLX_URL`, `TEXT_MODEL`, `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR`, `PAGEGEN_TRACE`(1이고 `.env`에 키가 있으면 앱도 LangSmith 프로젝트 `pagegen-app`에 추적), `LANGSMITH_API_KEY`·`LANGSMITH_PROJECT`(`.env`) — 기본값은 설계 문서 §2를 참고하세요.
 
 ## 구조 (LangChain · LangGraph)
 
@@ -35,7 +35,7 @@ uv run python -m pagegen.server
 ## LangSmith (개발·학습 데이터만)
 
 - `.env`(git 제외)에 `LANGSMITH_API_KEY=…`를 넣으면, 평가·파인튜닝 스크립트(`scripts/eval_tools.py`, `scripts/finetune/*`)가 LangSmith에 추적·실험을 남깁니다.
-- **앱 서버는 기본으로 추적을 끕니다.** 실제 상품 설명·문구를 LangSmith로 보내려면 `PAGEGEN_TRACE=1`로 서버를 띄웁니다.
+- **앱 서버는 기본으로 추적을 끕니다**(셸에 `LANGSMITH_TRACING` 같은 값이 켜져 있어도 끕니다). 실제 상품 설명·문구를 LangSmith로 보내려면 `.env`에 키를 둔 채 `PAGEGEN_TRACE=1 uv run python -m pagegen.server`로 띄웁니다(프로젝트 `pagegen-app`).
 
 ## 지키는 규칙
 

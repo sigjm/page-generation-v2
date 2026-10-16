@@ -12,6 +12,7 @@ import urllib.request
 from pathlib import Path
 
 import openai
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from PIL import Image, ImageOps
 
@@ -59,6 +60,27 @@ def _openai_calls(message) -> list[dict]:
     return calls
 
 
+def _lc_message(message: dict):
+    """An assistant turn with tool calls as an AIMessage. LangChain json.loads every arguments string in a dict
+    history, so a call the model sent with broken JSON goes in as an invalid tool call, raw text and all."""
+    if message.get("role") != "assistant" or not message.get("tool_calls"):
+        return message
+    valid, invalid = [], []
+    for call in message["tool_calls"]:
+        function = call.get("function") or {}
+        raw = function.get("arguments") or ""
+        try:
+            args = raw if isinstance(raw, dict) else json.loads(raw)
+        except ValueError:
+            args = None
+        if isinstance(args, dict):
+            valid.append({"name": function.get("name") or "", "args": args, "id": call.get("id") or ""})
+        else:
+            invalid.append({"name": function.get("name") or "", "args": raw if isinstance(raw, str) else json.dumps(raw),
+                            "id": call.get("id") or "", "error": None})
+    return AIMessage(content=message.get("content") or "", tool_calls=valid, invalid_tool_calls=invalid)
+
+
 def chat(messages: list[dict], *, tools: list[dict] | None = None, schema: dict | None = None,
          thinking: bool = False, max_tokens: int = 1024, temperature: float = 0.0, model: str | None = None) -> dict:
     """One chat completion. Returns {"content", "tool_calls"} with OpenAI-form tool calls (arguments as JSON text)."""
@@ -69,10 +91,10 @@ def chat(messages: list[dict], *, tools: list[dict] | None = None, schema: dict 
         runnable = runnable.with_structured_output({"title": "out", **schema}, method="json_schema", strict=True,
                                                    include_raw=True)
     try:
-        reply = runnable.invoke(messages)
+        reply = runnable.invoke([_lc_message(m) for m in messages])
     except openai.APIStatusError as e:
         raise LLMError(f"모델 서버 오류: {e.status_code} {e.response.text[:200]}") from e
-    except openai.OpenAIError as e:
+    except Exception as e:  # noqa: BLE001 — any malformed reply (200 with an error body, no choices…) is a model failure
         raise LLMError(f"모델 서버 오류: {e}") from e
     if isinstance(reply, dict):  # structured output: chat_json parses the raw text itself (fences, retries)
         reply = reply["raw"]
