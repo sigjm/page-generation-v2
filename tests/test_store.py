@@ -92,3 +92,11 @@ def test_served_file_only_listed_photos_and_export(root):
     for rel in ["photos/secret.jpg", "page.json", "export/../page.json", "photos/../page.json", "export/nope.png", "export"]:
         with pytest.raises(store.NotFound):
             store.served_file(pid, rel)
+
+
+def test_create_accepts_multi_picture_jpeg(root):
+    # Camera JPEGs with an embedded preview (and iPhone HDR exports) open as Pillow format "MPO"
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 30), "red").save(buffer, "MPO", save_all=True, append_images=[Image.new("RGB", (20, 15), "blue")])
+    _, photos = store.create([buffer.getvalue()])
+    assert photos[0]["file"] == "photos/p1.jpg"

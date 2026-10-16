@@ -1,3 +1,4 @@
+import http.client
 import io
 import urllib.error
 
@@ -71,9 +72,24 @@ def test_connection_refused_becomes_llm_error(monkeypatch):
         llm.chat([])
 
 
-def test_chat_strips_inline_think(monkeypatch):
-    monkeypatch.setattr(llm, "_post", lambda *a, **k: {"choices": [{"message": {"content": "<think>음…</think>\n좋아요"}}]})
-    assert llm.chat([])["content"] == "좋아요"
+@pytest.mark.parametrize("content, shown", [
+    ("<think>음…</think>\n좋아요", "좋아요"),
+    ("음… 추론…</think>\n\n좋아요", "좋아요"),  # template already opened <think>
+    ("<think>사용자가 원하는 건", ""),  # thinking cut off by max_tokens
+])
+def test_chat_never_shows_reasoning(monkeypatch, content, shown):
+    monkeypatch.setattr(llm, "_post", lambda *a, **k: {"choices": [{"message": {"content": content}}]})
+    assert llm.chat([])["content"] == shown
+
+
+@pytest.mark.parametrize("error", [http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"{")])
+def test_server_dying_mid_response_becomes_llm_error(monkeypatch, error):
+    def boom(*a, **k):
+        raise error
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", boom)
+    with pytest.raises(llm.LLMError, match="모델 서버 오류"):
+        llm.chat([])
 
 
 def test_chat_sends_schema_tools_and_thinking(monkeypatch):

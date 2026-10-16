@@ -1,5 +1,6 @@
 """MLX Serve client (spec §2, §6): chat with tools / vision / json_schema, and Qwen-Image edit. stdlib HTTP."""
 import base64
+import http.client
 import io
 import json
 import logging
@@ -16,7 +17,6 @@ TEXT_MODEL = os.environ.get("TEXT_MODEL", "empero-ai/Qwen3.8-9B-Distill-MLX-4bit
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "ddalcu/Qwen-Image-2.1-MLX-Serve-4bit")
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "20"))
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
-_THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 log = logging.getLogger("pagegen")
 
 
@@ -32,7 +32,7 @@ def _post(route: str, body: dict, timeout: float = 300) -> dict:
             return json.load(response)
     except urllib.error.HTTPError as e:
         raise LLMError(f"모델 서버 오류: {e.code} {e.read().decode('utf-8', 'replace')[:200]}") from e
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+    except (OSError, http.client.HTTPException, ValueError) as e:  # also a server dying mid-response
         raise LLMError(f"모델 서버 오류: {e}") from e
 
 
@@ -48,8 +48,13 @@ def chat(messages: list[dict], *, tools: list[dict] | None = None, schema: dict 
         message = _post("/v1/chat/completions", body)["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as e:
         raise LLMError(f"모델 응답 형식 오류: {e}") from e
-    if message.get("content"):
-        message["content"] = _THINK.sub("", message["content"]).strip()
+    content = message.get("content")
+    if content:
+        if "</think>" in content:
+            content = content.rpartition("</think>")[2]
+        elif content.lstrip().startswith("<think>"):
+            content = ""  # thinking cut off by max_tokens: there is no answer, and the reasoning is never shown
+        message["content"] = content.strip()
     return message
 
 

@@ -280,3 +280,19 @@ def test_normalize_analysis_tolerates_junk():
     assert agent.normalize_analysis(raw, "500ml") == {
         "category": "", "visible_features": ["a", "b"], "colors": [],
         "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"]}
+
+
+def test_update_judges_only_new_sentences(page, folder):
+    page["sections"][1]["body"] = "넉넉한 용량: 500ml\n원터치: 한 손으로 열어요"
+    fake = JudgeByContent([], bad=["한 손으로"])  # an existing line the judge would now flag
+    new_body = "넉넉한 용량: 500ml\n원터치: 한 손으로 열어요\n가벼움: 들고 다니기 편해요"
+    fake.chats = [{"tool_calls": [call("update_text", section_id="s2", field="body", text=new_body)]},
+                  {"content": "추가했어요."}]
+    _, changed = agent.chat_turn(folder, page, [], "가벼움도 넣어줘", fake)
+    assert changed and page["sections"][1]["body"] == new_body
+    assert fake.judged == ["가벼움: 들고 다니기 편해요"]
+
+
+def test_normalize_analysis_checks_numbers_in_the_whole_row():
+    raw = {"facts": [{"key": "12개월 품질보증", "value": "가능"}, {"key": "용량", "value": "500ml"}]}
+    assert agent.normalize_analysis(raw, "500ml, 반품 가능")["facts"] == [{"key": "용량", "value": "500ml"}]

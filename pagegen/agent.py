@@ -40,10 +40,15 @@ def unsupported(llm, text: str, basis: str) -> list[str]:
     return [f for line in text.splitlines() for s in _sentences(line) for f in judge(llm, s, basis)]
 
 
-def _verifier(llm, basis: str) -> Callable[[str], None]:
+def _verifier(llm, basis: str, old: str = "") -> Callable[[str], None]:
+    """Claim check for new text. Sentences already on the page are not judged again: the judge can flip on
+    them as the basis grows, and the model then silently drops the seller's own rows to get past it."""
+    seen = {s for line in old.splitlines() for s in _sentences(line)}
+
     def verify(text: str) -> None:
+        new = "\n".join(s for line in text.splitlines() for s in _sentences(line) if s not in seen)
         try:
-            flagged = unsupported(llm, text, basis)
+            flagged = unsupported(llm, new, basis)
         except LLMError:
             raise pg.ToolError("오류: 주장 검사를 하지 못해 반영하지 않았습니다.") from None
         if flagged:
@@ -74,15 +79,17 @@ def _args(call: dict) -> dict:
     return args
 
 
-def _run_tool(folder: Path, page: dict, name: str, args: dict, corpus: str, verify, llm) -> str:
+def _run_tool(folder: Path, page: dict, name: str, args: dict, corpus: str, basis: str, llm) -> str:
     a = {key: str(value) for key, value in args.items()}
     try:
         match name:
             case "update_text":
-                return pg.update_text(page, a["section_id"], a["field"], a["text"], corpus, verify)
+                old = pg.find_section(page, a["section_id"]).get(a["field"], "")
+                return pg.update_text(page, a["section_id"], a["field"], a["text"], corpus,
+                                      _verifier(llm, basis, str(old)))
             case "add_section":
                 return pg.add_section(page, a["kind"], a.get("after_section_id", ""), a.get("headline", ""),
-                                      a.get("body", ""), corpus, verify)
+                                      a.get("body", ""), corpus, _verifier(llm, basis))
             case "remove_section":
                 return pg.remove_section(page, a["section_id"])
             case "move_section":
@@ -102,7 +109,7 @@ def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default
     history = [{"role": m["role"], "content": m["text"]} for m in chat[-HISTORY:]]
     chat.append({"role": "user", "text": text})
     corpus = pg.corpus_of(page, chat)
-    verify = _verifier(llm, basis_of(page, chat))
+    basis = basis_of(page, chat)
     messages = [{"role": "system", "content": prompts.chat_system(page)}, *history, {"role": "user", "content": text}]
     log: list[dict] = []
     changed, reply = False, None
@@ -121,7 +128,7 @@ def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default
                     reply = args.get("question") or "조금 더 알려 주세요."
                     log.append({"name": name, "args": args, "ok": True, "result": "질문"})
                     break
-                result, ok = _run_tool(folder, page, name, args, corpus, verify, llm), True
+                result, ok = _run_tool(folder, page, name, args, corpus, basis, llm), True
             except pg.ToolError as e:
                 result, ok = str(e), False
             log.append({"name": name, "args": args, "ok": ok, "result": result})
@@ -146,7 +153,7 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
     for fact in raw.get("facts") or []:
         if isinstance(fact, dict):
             key, value = str(fact.get("key") or "").strip(), str(fact.get("value") or "").strip()
-            if key and value and pg.is_sourced(value, corpus):
+            if key and value and pg.is_sourced(value, corpus) and not pg.unsupported_numbers(f"{key}: {value}", corpus):
                 facts.append({"key": key, "value": value})
     return {"category": str(raw.get("category") or "").strip(), "visible_features": strings("visible_features", 5),
             "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
