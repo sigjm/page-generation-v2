@@ -71,6 +71,20 @@ def test_metrics_count_failures_as_flagged():
     assert m["f1"] == 0.5 and m["false_flag_rate"] == 0.5 and m["failures"] == 1
 
 
+def test_eval_refuses_a_model_the_server_does_not_list(monkeypatch, tmp_path):
+    import sys
+
+    import pytest
+
+    # MLX Serve answers an unknown model name with whatever model is loaded, so the eval would score that one
+    monkeypatch.setattr(ej, "served_models", lambda: ["empero-ai/base"])
+    monkeypatch.setattr(ej.agent, "judge", lambda *a: pytest.fail("judged with an unlisted model"))
+    (tmp_path / "eval.jsonl").write_text('{"id": "a", "text": "t", "basis": "b", "flagged": true}\n', "utf-8")
+    monkeypatch.setattr(sys, "argv", ["eval_judge.py", "--model", "local/new", "--eval", str(tmp_path / "eval.jsonl")])
+    with pytest.raises(SystemExit, match="local/new"):
+        ej.main()
+
+
 def test_langsmith_logging_needs_a_key(monkeypatch):
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     assert ej.log_to_langsmith([], [], "m") is None

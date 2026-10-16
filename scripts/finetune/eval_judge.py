@@ -10,6 +10,7 @@ import hashlib
 import json
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -27,6 +28,11 @@ def metrics(results: list[dict]) -> dict:
     f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     return {"n": len(results), "precision": round(precision, 3), "recall": round(recall, 3), "f1": round(f1, 3),
             "false_flag_rate": round(fp / clean, 3) if clean else 0.0, "failures": sum(r["failed"] for r in results)}
+
+
+def served_models() -> list[str]:
+    with urllib.request.urlopen(f"{llm.MLX_URL}/v1/models", timeout=10) as response:
+        return [m["id"] for m in json.load(response)["data"]]
 
 
 def dataset_name(rows: list[dict]) -> str:
@@ -66,6 +72,8 @@ def main() -> int:
     parser.add_argument("--eval", type=Path, default=Path(".local/finetune/judge/eval.jsonl"))
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
+    if args.model not in served_models():  # MLX Serve answers an unknown name with whatever model is loaded
+        raise SystemExit(f"MLX Serve does not list {args.model}; restart the MLX-Serve app after a fuse")
     llm.JUDGE_MODEL = args.model
     rows = [json.loads(line) for line in args.eval.read_text("utf-8").splitlines() if line.strip()]
     results = []
