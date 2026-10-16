@@ -19,6 +19,7 @@ from pagegen.page import is_sourced  # noqa: E402
 
 ROOT = Path(".local/finetune/judge")
 HELD_CATEGORY_COUNT = 6  # products per category kept out of training for the eval set
+MAX_FLAGGED = 0.45  # spec §3.2: 35-50% of training sentences carry an unsupported claim
 
 
 def read(name: str) -> list[dict]:
@@ -83,6 +84,18 @@ def split(product_ids: list[str], held_per) -> tuple[list[str], list[str], list[
     return held, [p for p in rest if p not in valid], valid
 
 
+def cap_flagged(rows: list[tuple[dict, bool]], cap: float = MAX_FLAGGED) -> list[dict]:
+    """At most `cap` of the rows flagged: drops flagged 9B rows at random; injected rows (id ...-inj) all stay."""
+    clean = sum(not f for _, f in rows)
+    allowed = round(cap * clean / (1 - cap))
+    natural = [r for r, f in rows if f and not r["id"].endswith("-inj")]
+    extra = sum(f for _, f in rows) - allowed
+    if extra <= 0:
+        return [r for r, _ in rows]
+    dropped = {r["id"] for r in random.Random(0).sample(natural, min(extra, len(natural)))}
+    return [r for r, _ in rows if r["id"] not in dropped]
+
+
 def sft_row(sentence_id: str, product: dict, text: str, label: dict) -> dict:
     answer = json.dumps({"phrases": label["phrases"]}, ensure_ascii=False, separators=(",", ":"))
     return {"id": sentence_id, "messages": [*agent.judge_messages(text, basis(product)),
@@ -136,6 +149,7 @@ def cmd_build() -> int:
     held_ids = {pid for ids in by_category.values() for pid in ids[:HELD_CATEGORY_COUNT]}
     held, train, valid = split(sorted(products), held_per=lambda pid: pid in held_ids)
     rows: dict[str, list[dict]] = {"train": [], "valid": [], "held": []}
+    is_flagged: dict[str, bool] = {}
     dropped = 0
     for sid, s in sentences.items():
         label = validate_label(s["text"], labels.get(sid, {}), s.get("injected_phrase"))
@@ -148,6 +162,9 @@ def cmd_build() -> int:
                                  "basis": basis(products[s["product_id"]]), **label, "flagged": flagged(label)})
         else:
             rows[bucket].append(sft_row(sid, products[s["product_id"]], s["text"], label))
+            is_flagged[sid] = flagged(label)
+    before = len(rows["train"])
+    rows["train"] = cap_flagged([(r, is_flagged[r["id"]]) for r in rows["train"]])
     random.Random(0).shuffle(rows["train"])
     write("sft/train.jsonl", rows["train"])
     write("sft/validation.jsonl", rows["valid"])
@@ -155,9 +172,9 @@ def cmd_build() -> int:
     held_clean = [r for r in rows["held"] if not r["flagged"]]
     rng = random.Random(0)
     write("eval_candidates.jsonl", rng.sample(held_flagged, min(75, len(held_flagged))) + rng.sample(held_clean, min(75, len(held_clean))))
-    train_flagged = sum('"supported":false' in r["messages"][-1]["content"] for r in rows["train"])
+    train_flagged = sum(is_flagged[r["id"]] for r in rows["train"])
     print(json.dumps({"train": len(rows["train"]), "validation": len(rows["valid"]), "held": len(rows["held"]),
-                      "dropped": dropped, "train_flagged_ratio": round(train_flagged / max(1, len(rows["train"])), 3)}))
+                      "dropped": dropped, "capped": before - len(rows["train"]), "train_flagged_ratio": round(train_flagged / max(1, len(rows["train"])), 3)}))
     return 0
 
 

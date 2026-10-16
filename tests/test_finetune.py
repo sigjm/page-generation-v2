@@ -78,3 +78,13 @@ def test_dataset_name_changes_with_the_labels():
     a = [{"id": "x", "flagged": True}]
     b = [{"id": "x", "flagged": False}]
     assert ej.dataset_name(a) != ej.dataset_name(b) and ej.dataset_name(a).startswith("pagegen-judge-eval-")
+
+
+def test_cap_flagged_drops_9b_flagged_rows_and_keeps_injected():
+    rows = ([({"id": f"c{i}"}, False) for i in range(55)] + [({"id": f"f{i}"}, True) for i in range(40)]
+            + [({"id": f"x{i}-inj"}, True) for i in range(10)])
+    kept = jd.cap_flagged(rows, cap=0.45)
+    ids = {r["id"] for r in kept}
+    assert {f"c{i}" for i in range(55)} <= ids and {f"x{i}-inj" for i in range(10)} <= ids
+    assert len(kept) == 100  # 45 flagged of 100
+    assert jd.cap_flagged(rows[:60], cap=0.45) == [r for r, _ in rows[:60]]  # already under the cap
