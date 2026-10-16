@@ -159,10 +159,7 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
             if key and value and pg.is_sourced(value, corpus) and not pg.unsupported_numbers(f"{key}: {value}", corpus):
                 facts.append({"key": key, "value": value})
     return {"category": str(raw.get("category") or "").strip(), "visible_features": strings("visible_features", 5),
-            "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3),
-            # keeps empty captions so each one stays lined up with its photo
-            "photo_captions": [str(c or "").strip() for c in raw["photo_captions"]][:4]
-            if isinstance(raw.get("photo_captions"), list) else []}
+            "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
 
 
 def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) -> tuple[list[dict], str]:
@@ -178,7 +175,8 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
     sections = [
         {"kind": "hero", "variant": "below", "headline": get("hero", "headline") or name, "body": get("hero", "body"),
          "photo": uploads[0]},
-        {"kind": "banner", "variant": "light", "headline": get("banner", "headline"), "body": ""},
+        {"kind": "banner", "variant": "light", "body": "",
+         "headline": "" if get("banner", "headline") == (get("hero", "headline") or name) else get("banner", "headline")},
         {"kind": "points", "variant": "cards", "headline": get("points", "headline") or "이래서 좋아요",
          "body": "\n".join(f"{str(i.get('title') or '').strip()}: {str(i['text']).strip()}" for i in items)},
     ]
@@ -254,6 +252,18 @@ def _settle(sections: list[dict]) -> list[dict]:
     return kept
 
 
+def _caption(folder: Path, photo: dict, llm) -> str:
+    """What one split photo shows. A failed call returns "": the split gets no copy and its photo goes to the gallery."""
+    try:
+        data = llm.chat_json([{"role": "system", "content": prompts.CAPTION_SYSTEM},
+                              {"role": "user", "content": [llm.image_part(llm.model_jpeg(folder / photo["file"])),
+                                                           {"type": "text", "text": "이 사진에서 보이는 것을 한 문장으로."}]}],
+                             prompts.CAPTION_SCHEMA, max_tokens=200)
+    except LLMError:
+        return ""
+    return str(data.get("caption") or "").strip()
+
+
 def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=default_llm) -> tuple[dict, dict]:
     """Spec §4.1. Returns (page, first assistant message). Raises LLMError and then no draft exists."""
     page = {"id": pid, "version": 1, "product": product, "analysis": {}, "photos": photos, "sections": []}
@@ -264,7 +274,10 @@ def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=de
                          {"role": "user", "content": [*images, {"type": "text", "text": seller}]}],
                         prompts.ANALYZE_SCHEMA)
     page["analysis"] = normalize_analysis(raw, corpus)
-    captions = page["analysis"]["photo_captions"]
+    captions = [""]  # p1 is covered by the analysis; captions[i] belongs to photos[i]
+    for photo in photos[1:3]:
+        captions.append(_caption(folder, photo, llm))
+    page["analysis"]["photo_captions"] = captions
     split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(photos) - 1))
                    if i + 1 < len(captions) and captions[i + 1]]
     detail_hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."

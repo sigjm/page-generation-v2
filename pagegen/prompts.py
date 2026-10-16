@@ -66,14 +66,12 @@ ANALYZE_SYSTEM = """너는 상품 사진 분석가다. 사진과 판매자 입�
 - visible_features: 사진에서 실제로 보이는 특징만, 최대 5개(예: "무광 표면", "원터치 뚜껑"). 추측하지 않는다.
 - colors: 사진에서 보이는 색, 최대 5개.
 - facts: 판매자 설명에 적힌 사실만 {key, value}로. value는 설명의 표현을 그대로 옮긴다(예: {"key": "용량", "value": "500ml"}). 설명에 없으면 빈 목록.
-- photo_captions: 받은 사진 순서대로 사진마다 한 문장. 그 사진에서 보이는 것만 쓴다(예: "뚜껑을 연 모습, 안쪽 스테인리스가 보인다").
 - questions: 상세페이지에 꼭 필요한데 설명에 없는 정보를 묻는 질문, 최대 3개. 분류별로 우선 물을 것 — 의류·잡화: 소재(혼용률), 치수, 세탁·관리 방법, 제조국 / 식품: 원재료·원산지, 용량·중량, 보관 방법, 유통기한 / 화장품: 용량, 피부 타입, 주요 성분, 사용 방법 / 가전·전자: 모델명, 정격전압·소비전력, KC 인증, A/S 연락처 / 생활·주방·기타: 소재, 크기, 관리 방법. 설명에 이미 있는 것은 묻지 않는다."""
 
 _STRINGS = {"type": "array", "items": {"type": "string"}}
 ANALYZE_SCHEMA = {"type": "object", "additionalProperties": False,
-                  "required": ["category", "visible_features", "colors", "facts", "questions", "photo_captions"], "properties": {
+                  "required": ["category", "visible_features", "colors", "facts", "questions"], "properties": {
     "category": {"type": "string"}, "visible_features": _STRINGS, "colors": _STRINGS, "questions": _STRINGS,
-    "photo_captions": _STRINGS,
     "facts": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["key", "value"],
                                          "properties": {"key": {"type": "string"}, "value": {"type": "string"}}}}}}
 
@@ -85,7 +83,7 @@ COPY_SYSTEM = """너는 한국 온라인 쇼핑몰 상세페이지 카피라이�
 - notice는 판매자 설명에 관리·주의 사항이 있을 때만 쓰고, 없으면 headline과 body를 빈 문자열로 둔다.
 - scene.photo_instruction은 이 제품이 잘 어울리는 배경이나 사용 장면을 한 문장으로 쓴다(예: "아침 햇살이 드는 원목 식탁 위").
 - hero.headline은 이 제품이 주는 핵심 혜택 하나를 질문형·결과 약속형·비교형 중 하나로, 20자 안에 쓴다. 페이지 전체가 이 메시지 하나를 남기게 한다.
-- banner.headline은 고객이 겪는 상황에 공감하는 한 문장이다(질문형 가능). 제품 사실을 새로 말하지 않는다.
+- banner.headline은 고객이 겪는 상황에 공감하는 한 문장이다(질문형 가능). hero.headline과 다른 문장으로 쓰고, 제품 사실을 새로 말하지 않는다.
 - 섹션 제목은 "주요 특징", "이래서 좋아요" 같은 이름표가 아니라 내용이 담긴 문장으로 쓴다.
 - 기능을 나열하지 말고 그 기능이 고객에게 주는 혜택을 쓴다.
 - "최고, 최상, 최초, 1위, 완벽, 유일, 최저가" 같은 최상급 표현은 판매자 설명에 없으면 쓰지 않는다.
@@ -105,3 +103,8 @@ COPY_SCHEMA = _object(
     banner=_object(headline=_T),
     details={"type": "array", "items": _object(headline=_T, body=_T)},
 )
+
+# One photo per call: asked about several photos at once, the 9B described one photo twice and the
+# captions no longer lined up with the photos (real 4-photo draft, 2026-10-16).
+CAPTION_SYSTEM = "사진 한 장에서 보이는 것만 한 문장으로 쓴다. 보이지 않는 소재·기능·용도는 추측하지 않는다."
+CAPTION_SCHEMA = _object(caption=_T)

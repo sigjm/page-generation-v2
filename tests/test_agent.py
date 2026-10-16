@@ -279,11 +279,10 @@ def test_chat_verify_judges_each_sentence(page, folder):
 def test_normalize_analysis_tolerates_junk():
     raw = {"category": None, "visible_features": ["a", "", "b"], "colors": "red",
            "facts": [{"key": "용량", "value": "500ml"}, "x", {"key": "", "value": "1"}],
-           "questions": ["q1", "q2", "q3", "q4"], "photo_captions": ["앞", None]}
+           "questions": ["q1", "q2", "q3", "q4"]}
     assert agent.normalize_analysis(raw, "500ml") == {
         "category": "", "visible_features": ["a", "b"], "colors": [],
-        "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"],
-        "photo_captions": ["앞", ""]}
+        "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"]}
 
 
 def test_update_judges_only_new_sentences(page, folder):
@@ -328,14 +327,15 @@ def test_tools_and_rules_know_the_new_kinds():
         assert word in prompts.CHAT_RULES
 
 
-ANALYSIS_L = {**ANALYSIS, "photo_captions": ["정면", "뚜껑을 연 모습", "무광 표면 클로즈업", "손에 쥔 모습"]}
+CAPTIONS = [{"caption": "뚜껑을 연 모습"}, {"caption": "무광 표면 클로즈업"}]
 COPY_L = {**COPY, "banner": {"headline": "식은 커피, 아쉽지 않으셨나요?"},
           "details": [{"headline": "한 손으로 여는 뚜껑", "body": "원터치로 열려요."},
                       {"headline": "매끈한 무광 표면", "body": "손자국이 덜 보여요."}]}
 
 
-def draft_n(folder, n, bad=(), copy=COPY_L):
-    fake = JudgeByContent([ANALYSIS_L, copy], bad=bad)
+def draft_n(folder, n, bad=(), copy=COPY_L, captions=CAPTIONS):
+    # call order: analysis, one caption call per split photo (p2, p3), copy, then judge calls
+    fake = JudgeByContent([ANALYSIS, *captions[:max(0, min(2, n - 1))], copy], bad=bad)
     photos = [{"id": f"p{i}", "file": f"photos/p{i}.jpg", "origin": "upload"} for i in range(1, n + 1)]
     page, _ = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
     return page, fake
@@ -352,8 +352,11 @@ def test_draft_places_every_photo(folder):
         ("split", "image-left", "p2"), ("split", "image-right", "p3"), ("scene", None, "p1-e1"),
         ("gallery", "grid-2", ["p4", "p5"]), ("spec_table", None, None), ("notice", None, None)]
     assert [s["id"] for s in page["sections"]] == [f"s{i}" for i in range(1, 10)]
-    copy_input = fake.json_calls[1][1]["content"]
+    for call_messages in fake.json_calls[1:3]:  # each split photo is described on its own
+        assert [part["type"] for part in call_messages[1]["content"]] == ["image_url", "text"]
+    copy_input = fake.json_calls[3][1]["content"]
     assert "사진 2: 뚜껑을 연 모습" in copy_input and "사진 3: 무광 표면 클로즈업" in copy_input
+    assert page["analysis"]["photo_captions"] == ["", "뚜껑을 연 모습", "무광 표면 클로즈업"]
 
 
 def test_draft_one_photo_keeps_the_old_layout(folder):
@@ -384,3 +387,14 @@ def test_draft_drops_unsourced_superlatives_without_judging(folder):
 def test_basis_includes_photo_captions(page):
     page["analysis"]["photo_captions"] = ["뚜껑을 연 모습"]
     assert "뚜껑을 연 모습" in agent.basis_of(page, [])
+
+
+def test_draft_banner_repeating_the_hero_is_dropped(folder):
+    copy = {**COPY_L, "banner": {"headline": COPY_L["hero"]["headline"]}, "details": []}
+    page, _ = draft_n(folder, 1, copy=copy)
+    assert "banner" not in [s["kind"] for s in page["sections"]]
+
+
+def test_draft_failed_caption_sends_the_photo_to_gallery(folder):
+    page, _ = draft_n(folder, 2, captions=[LLMError("JSON 두 번 실패")], copy={**COPY_L, "details": []})
+    assert layout(page)[3:5] == [("scene", None, "p1-e1"), ("gallery", "stack", ["p2"])]
