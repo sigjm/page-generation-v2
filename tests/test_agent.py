@@ -279,10 +279,11 @@ def test_chat_verify_judges_each_sentence(page, folder):
 def test_normalize_analysis_tolerates_junk():
     raw = {"category": None, "visible_features": ["a", "", "b"], "colors": "red",
            "facts": [{"key": "용량", "value": "500ml"}, "x", {"key": "", "value": "1"}],
-           "questions": ["q1", "q2", "q3", "q4"]}
+           "questions": ["q1", "q2", "q3", "q4"], "photo_captions": ["앞", None]}
     assert agent.normalize_analysis(raw, "500ml") == {
         "category": "", "visible_features": ["a", "b"], "colors": [],
-        "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"]}
+        "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"],
+        "photo_captions": ["앞", ""]}
 
 
 def test_update_judges_only_new_sentences(page, folder):
@@ -325,3 +326,61 @@ def test_tools_and_rules_know_the_new_kinds():
     assert len(names) == 8 and "set_variant" in names
     for word in ("banner", "split", "gallery", "set_variant", "overlay", "grid-3"):
         assert word in prompts.CHAT_RULES
+
+
+ANALYSIS_L = {**ANALYSIS, "photo_captions": ["정면", "뚜껑을 연 모습", "무광 표면 클로즈업", "손에 쥔 모습"]}
+COPY_L = {**COPY, "banner": {"headline": "식은 커피, 아쉽지 않으셨나요?"},
+          "details": [{"headline": "한 손으로 여는 뚜껑", "body": "원터치로 열려요."},
+                      {"headline": "매끈한 무광 표면", "body": "손자국이 덜 보여요."}]}
+
+
+def draft_n(folder, n, bad=(), copy=COPY_L):
+    fake = JudgeByContent([ANALYSIS_L, copy], bad=bad)
+    photos = [{"id": f"p{i}", "file": f"photos/p{i}.jpg", "origin": "upload"} for i in range(1, n + 1)]
+    page, _ = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
+    return page, fake
+
+
+def layout(page):
+    return [(s["kind"], s.get("variant"), s.get("photo") or s.get("photos")) for s in page["sections"]]
+
+
+def test_draft_places_every_photo(folder):
+    page, fake = draft_n(folder, 5)
+    assert layout(page) == [
+        ("hero", "below", "p1"), ("banner", "light", None), ("points", "cards", None),
+        ("split", "image-left", "p2"), ("split", "image-right", "p3"), ("scene", None, "p1-e1"),
+        ("gallery", "grid-2", ["p4", "p5"]), ("spec_table", None, None), ("notice", None, None)]
+    assert [s["id"] for s in page["sections"]] == [f"s{i}" for i in range(1, 10)]
+    copy_input = fake.json_calls[1][1]["content"]
+    assert "사진 2: 뚜껑을 연 모습" in copy_input and "사진 3: 무광 표면 클로즈업" in copy_input
+
+
+def test_draft_one_photo_keeps_the_old_layout(folder):
+    page, _ = draft_n(folder, 1, copy={**COPY_L, "details": []})
+    assert [s["kind"] for s in page["sections"]] == ["hero", "banner", "points", "scene", "spec_table", "notice"]
+
+
+def test_draft_split_without_text_sends_its_photo_to_gallery(folder):
+    page, _ = draft_n(folder, 3, copy={**COPY_L, "details": COPY_L["details"][:1]})  # no copy for p3
+    assert layout(page)[3:6] == [("split", "image-left", "p2"), ("scene", None, "p1-e1"), ("gallery", "stack", ["p3"])]
+
+
+def test_draft_flagged_banner_and_split_headline_become_empty(folder):
+    page, _ = draft_n(folder, 2, bad=["식은 커피", "한 손으로"])
+    kinds = [s["kind"] for s in page["sections"]]
+    assert "banner" not in kinds  # an empty banner says nothing
+    split = next(s for s in page["sections"] if s["kind"] == "split")
+    assert split["headline"] == "" and split["body"] == "원터치로 열려요."
+
+
+def test_draft_drops_unsourced_superlatives_without_judging(folder):
+    copy = {**COPY_L, "hero": {"headline": "하루 종일 따뜻하게", "body": "업계 최고의 보온력. 이중 진공 단열 텀블러."}}
+    page, fake = draft_n(folder, 1, copy={**copy, "details": []})
+    assert page["sections"][0]["body"] == "이중 진공 단열 텀블러."
+    assert "업계 최고의 보온력." not in fake.judged
+
+
+def test_basis_includes_photo_captions(page):
+    page["analysis"]["photo_captions"] = ["뚜껑을 연 모습"]
+    assert "뚜껑을 연 모습" in agent.basis_of(page, [])

@@ -75,7 +75,8 @@ MLX Serve :11234  (앱으로 이미 실행 중, --model-dir ~/.mlx-serve/models)
     "visible_features": ["무광 스테인리스 표면", "원터치 뚜껑"],
     "colors": ["실버"],
     "facts": [{"key": "용량", "value": "500ml"}, {"key": "색상", "value": "3종"}],
-    "questions": ["무게는 얼마인가요?"]
+    "questions": ["무게는 얼마인가요?"],
+    "photo_captions": ["정면 사진", "뚜껑을 연 모습"]
   },
   "photos": [
     {"id": "p1", "file": "photos/p1.jpg", "origin": "upload"},
@@ -91,7 +92,7 @@ MLX Serve :11234  (앱으로 이미 실행 중, --model-dir ~/.mlx-serve/models)
 }
 ```
 
-- `analysis`는 첫 초안 때 한 번 만들고 바꾸지 않는다. 모든 키가 필수이며 빈 목록을 허용한다. `facts`는 설명(`notes`)에서 뽑은 `{key, value}`이고, `value`가 §5 스펙 표 검사를 통과한 것만 저장한다. `visible_features`·`colors`는 주장 검사(§5)의 사진 근거로 쓴다.
+- `analysis`는 첫 초안 때 한 번 만들고 바꾸지 않는다. 모든 키가 필수이며 빈 목록을 허용한다. `facts`는 설명(`notes`)에서 뽑은 `{key, value}`이고, `value`가 §5 스펙 표 검사를 통과한 것만 저장한다. `visible_features`·`colors`·`photo_captions`는 주장 검사(§5)의 사진 근거로 쓴다. `photo_captions`는 모델에 보낸 사진(최대 4장) 순서대로 한 문장씩이며, 빈 값도 자리를 지킨다(섹션 레이아웃 스펙 §4).
 - 섹션 필드는 모든 종류가 같다: `id`, `kind`, `headline`, `body`, `photo`(있을 때만).
 - `kind`는 5종: `hero`, `points`, `scene`, `spec_table`, `notice`.
 - `points`·`spec_table`의 `body`는 한 줄에 하나씩 `"제목: 설명"` / `"항목: 값"`. 근거 검사와 렌더러 모두 첫 `":"`에서 나누고 양쪽 공백을 지운다(`page.split_line`). 9B가 `"용량:500ml"`처럼 공백 없이 쓰거나 값에 `:`이 들어가도(`"10:30"`) 같은 결과가 나온다. `notice`의 `body`는 줄바꿈을 문단 구분으로 쓴다.

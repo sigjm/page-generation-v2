@@ -16,7 +16,8 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
 def basis_of(page: dict, chat: list[dict]) -> str:
-    seen = page["analysis"]["visible_features"] + page["analysis"]["colors"]
+    analysis = page["analysis"]
+    seen = analysis["visible_features"] + analysis["colors"] + [c for c in analysis.get("photo_captions", []) if c]
     return f"근거 텍스트: {pg.corpus_of(page, chat)}\n사진에서 보이는 것: {', '.join(seen) or '(없음)'}"
 
 
@@ -158,27 +159,43 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
             if key and value and pg.is_sourced(value, corpus) and not pg.unsupported_numbers(f"{key}: {value}", corpus):
                 facts.append({"key": key, "value": value})
     return {"category": str(raw.get("category") or "").strip(), "visible_features": strings("visible_features", 5),
-            "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
+            "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3),
+            # keeps empty captions so each one stays lined up with its photo
+            "photo_captions": [str(c or "").strip() for c in raw["photo_captions"]][:4]
+            if isinstance(raw.get("photo_captions"), list) else []}
 
 
-def build_sections(copy: dict, analysis: dict, name: str) -> tuple[list[dict], str]:
-    """Spec §4.1-4. Returns (sections without ids, scene photo instruction)."""
+def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) -> tuple[list[dict], str]:
+    """Spec §4 (layouts): p1 → hero/scene, p2·p3 → split, p4… → gallery. Returns (sections without ids, scene instruction)."""
     def get(block: str, key: str) -> str:
         part = copy.get(block)
         return str(part.get(key) or "").strip() if isinstance(part, dict) else ""
 
+    uploads = [p["id"] for p in photos if p["origin"] == "upload"]
     points = copy.get("points") if isinstance(copy.get("points"), dict) else {}
     items = [i for i in points.get("items") or [] if isinstance(i, dict) and str(i.get("text") or "").strip()][:3]
+    details = [d for d in copy.get("details") or [] if isinstance(d, dict)]
     sections = [
-        {"kind": "hero", "headline": get("hero", "headline") or name, "body": get("hero", "body"), "photo": "p1"},
-        {"kind": "points", "headline": get("points", "headline") or "이래서 좋아요",
+        {"kind": "hero", "variant": "below", "headline": get("hero", "headline") or name, "body": get("hero", "body"),
+         "photo": uploads[0]},
+        {"kind": "banner", "variant": "light", "headline": get("banner", "headline"), "body": ""},
+        {"kind": "points", "variant": "cards", "headline": get("points", "headline") or "이래서 좋아요",
          "body": "\n".join(f"{str(i.get('title') or '').strip()}: {str(i['text']).strip()}" for i in items)},
-        {"kind": "scene", "headline": get("scene", "headline"), "body": get("scene", "body"), "photo": "p1"},
-        {"kind": "notice", "headline": get("notice", "headline") or "안내", "body": get("notice", "body")},
     ]
+    for i, photo in enumerate(uploads[1:3]):
+        detail = details[i] if i < len(details) else {}
+        sections.append({"kind": "split", "variant": pg.VARIANTS["split"][i % 2],
+                         "headline": str(detail.get("headline") or "").strip(),
+                         "body": str(detail.get("body") or "").strip(), "photo": photo})
+    sections.append({"kind": "scene", "headline": get("scene", "headline"), "body": get("scene", "body"),
+                     "photo": uploads[0]})
+    if uploads[3:]:
+        sections.append({"kind": "gallery", "variant": "grid-2" if len(uploads[3:]) > 1 else "stack",
+                         "headline": pg.GALLERY_TITLE, "body": "", "photos": uploads[3:]})
     if analysis["facts"]:
         rows = "\n".join(f"{f['key']}: {f['value']}" for f in analysis["facts"])
-        sections.insert(3, {"kind": "spec_table", "headline": "제품 정보", "body": rows})
+        sections.append({"kind": "spec_table", "headline": "제품 정보", "body": rows})
+    sections.append({"kind": "notice", "headline": get("notice", "headline") or "안내", "body": get("notice", "body")})
     return sections, get("scene", "photo_instruction") or "제품이 잘 어울리는 밝은 실내 공간"
 
 
@@ -186,7 +203,7 @@ def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) 
     """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check.
     A sentence the judge cannot answer (the 9B sometimes loops until max_tokens) is dropped, not fatal."""
     def passes(text: str) -> bool:
-        if pg.unsupported_numbers(text, corpus):
+        if pg.unsupported_numbers(text, corpus) or pg.unsupported_superlatives(text, corpus):
             return False
         if not text.strip():
             return True
@@ -198,7 +215,7 @@ def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) 
             return False  # unjudged text never reaches the page
 
     if not passes(section["headline"]):
-        section["headline"] = name
+        section["headline"] = "" if section["kind"] in ("banner", "split") else name  # don't repeat the hero title
     lines = []
     for line in section["body"].splitlines():
         sentences = _sentences(line)
@@ -211,7 +228,30 @@ def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) 
 
 
 def _has_content(section: dict) -> bool:
-    return bool(section["body"]) or section["kind"] in pg.PHOTO_KINDS
+    kind = section["kind"]
+    if kind == "gallery":
+        return bool(section["photos"])
+    if kind == "banner":
+        return bool(section["headline"])
+    if kind == "split":
+        return bool(section["headline"] or section["body"])
+    return bool(section["body"]) or kind in pg.PHOTO_KINDS
+
+
+def _settle(sections: list[dict]) -> list[dict]:
+    """Drop sections left without content; a dropped split's photo moves to the gallery, never lost."""
+    orphans = [s["photo"] for s in sections if s["kind"] == "split" and not _has_content(s)]
+    kept = [s for s in sections if _has_content(s)]
+    if orphans:
+        gallery = next((s for s in kept if s["kind"] == "gallery"), None)
+        if gallery is None:
+            gallery = {"kind": "gallery", "variant": "stack", "headline": pg.GALLERY_TITLE, "body": "", "photos": []}
+            tail = next((i for i, s in enumerate(kept) if s["kind"] in ("spec_table", "notice")), len(kept))
+            kept.insert(tail, gallery)
+        gallery["photos"] = orphans + gallery["photos"]
+        if len(gallery["photos"]) > 1 and gallery["variant"] == "stack":
+            gallery["variant"] = "grid-2"
+    return kept
 
 
 def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=default_llm) -> tuple[dict, dict]:
@@ -224,19 +264,23 @@ def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=de
                          {"role": "user", "content": [*images, {"type": "text", "text": seller}]}],
                         prompts.ANALYZE_SCHEMA)
     page["analysis"] = normalize_analysis(raw, corpus)
+    captions = page["analysis"]["photo_captions"]
+    split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(photos) - 1))
+                   if i + 1 < len(captions) and captions[i + 1]]
+    detail_hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
     copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
-                          {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}"}],
+                          {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{detail_hint}"}],
                          prompts.COPY_SCHEMA)
-    sections, instruction = build_sections(copy, page["analysis"], product["name"])
-    sections = [s for s in sections if _has_content(s)]
+    sections, instruction = build_sections(copy, page["analysis"], product["name"], photos)
+    sections = _settle(sections)
     basis = basis_of(page, [])
     tally = {"judged": 0, "failed": 0}
     for section in sections:
-        if section["kind"] != "spec_table":  # built from facts that already passed the spec check
+        if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
             _clean(section, corpus, basis, product["name"], llm, tally)
     if tally["judged"] and tally["failed"] == tally["judged"]:
         raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
-    page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate((s for s in sections if _has_content(s)), 1)]
+    page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate(_settle(sections), 1)]
     scene = next((s for s in page["sections"] if s["kind"] == "scene"), None)
     if scene:
         try:
