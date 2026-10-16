@@ -299,43 +299,91 @@ def _caption(folder: Path, photo: dict, llm) -> str:
     return str(data.get("caption") or "").strip()
 
 
+DRAFT_STEPS = ("analyze", "caption", "write_copy", "assemble", "check", "edit_scene", "first_message")
+
+
+class DraftState(TypedDict, total=False):
+    page: dict
+    corpus: str
+    seller: str
+    copy: dict
+    sections: list[dict]
+    instruction: str
+    message: dict
+
+
+def build_draft_graph(folder: Path, llm):
+    """The fixed-order first draft (spec §4.1) as a LangGraph pipeline; each node is a step make_draft used to run inline."""
+    def analyze(s: DraftState) -> dict:
+        page = s["page"]
+        images = [llm.image_part(llm.model_jpeg(folder / p["file"])) for p in page["photos"][:4]]
+        raw = llm.chat_json([{"role": "system", "content": prompts.ANALYZE_SYSTEM},
+                             {"role": "user", "content": [*images, {"type": "text", "text": s["seller"]}]}],
+                            prompts.ANALYZE_SCHEMA)
+        page["analysis"] = normalize_analysis(raw, s["corpus"])
+        return {"page": page}
+
+    def caption(s: DraftState) -> dict:
+        page = s["page"]
+        # captions[i] belongs to photos[i]; p1 is covered by the analysis
+        page["analysis"]["photo_captions"] = ["", *(_caption(folder, p, llm) for p in page["photos"][1:3])]
+        return {"page": page}
+
+    def write_copy(s: DraftState) -> dict:
+        page = s["page"]
+        captions = page["analysis"]["photo_captions"]
+        split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(page["photos"]) - 1))
+                       if i + 1 < len(captions) and captions[i + 1]]
+        hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
+        copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
+                              {"role": "user", "content": f"{s['seller']}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{hint}"}],
+                             prompts.COPY_SCHEMA)
+        return {"copy": copy}
+
+    def assemble(s: DraftState) -> dict:
+        page = s["page"]
+        sections, instruction = build_sections(s["copy"], page["analysis"], page["product"]["name"], page["photos"])
+        return {"sections": _settle(sections), "instruction": instruction}
+
+    def check(s: DraftState) -> dict:
+        page, sections = s["page"], s["sections"]
+        basis, tally = basis_of(page, []), {"judged": 0, "failed": 0}
+        for section in sections:
+            if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
+                _clean(section, s["corpus"], basis, page["product"]["name"], llm, tally)
+        if tally["judged"] and tally["failed"] == tally["judged"]:
+            raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
+        page["sections"] = [{"id": f"s{i}", **sec} for i, sec in enumerate(_settle(sections), 1)]
+        return {"page": page}
+
+    def edit_scene(s: DraftState) -> dict:
+        page = s["page"]
+        scene = next((sec for sec in page["sections"] if sec["kind"] == "scene"), None)
+        if scene:
+            try:
+                edit_photo(folder, page, scene["id"], s["instruction"], llm)
+            except pg.ToolError:
+                pass  # keep the original photo (spec §4.1-5)
+        return {"page": page}
+
+    def first_message(s: DraftState) -> dict:
+        questions = s["page"]["analysis"]["questions"]
+        text = "초안을 만들었어요. 오른쪽 미리보기를 보고 고칠 점을 말씀해 주세요."
+        if questions:
+            text += "\n더 채우려면 알려 주세요:\n" + "\n".join(f"- {q}" for q in questions)
+        return {"message": {"role": "assistant", "text": text, "tools": []}}
+
+    graph = StateGraph(DraftState)
+    for name, step in zip(DRAFT_STEPS, (analyze, caption, write_copy, assemble, check, edit_scene, first_message)):
+        graph.add_node(name, step)
+    for a, b in zip((START, *DRAFT_STEPS), (*DRAFT_STEPS, END)):
+        graph.add_edge(a, b)
+    return graph.compile()
+
+
 def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=default_llm) -> tuple[dict, dict]:
     """Spec §4.1. Returns (page, first assistant message). Raises LLMError and then no draft exists."""
     page = {"id": pid, "version": 1, "product": product, "analysis": {}, "photos": photos, "sections": []}
-    corpus = pg.corpus_of(page, [])
     seller = f"상품명: {product['name']}\n판매자 설명: {product['notes'] or '(없음)'}"
-    images = [llm.image_part(llm.model_jpeg(folder / p["file"])) for p in photos[:4]]
-    raw = llm.chat_json([{"role": "system", "content": prompts.ANALYZE_SYSTEM},
-                         {"role": "user", "content": [*images, {"type": "text", "text": seller}]}],
-                        prompts.ANALYZE_SCHEMA)
-    page["analysis"] = normalize_analysis(raw, corpus)
-    captions = [""]  # p1 is covered by the analysis; captions[i] belongs to photos[i]
-    for photo in photos[1:3]:
-        captions.append(_caption(folder, photo, llm))
-    page["analysis"]["photo_captions"] = captions
-    split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(photos) - 1))
-                   if i + 1 < len(captions) and captions[i + 1]]
-    detail_hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
-    copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
-                          {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{detail_hint}"}],
-                         prompts.COPY_SCHEMA)
-    sections, instruction = build_sections(copy, page["analysis"], product["name"], photos)
-    sections = _settle(sections)
-    basis = basis_of(page, [])
-    tally = {"judged": 0, "failed": 0}
-    for section in sections:
-        if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
-            _clean(section, corpus, basis, product["name"], llm, tally)
-    if tally["judged"] and tally["failed"] == tally["judged"]:
-        raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
-    page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate(_settle(sections), 1)]
-    scene = next((s for s in page["sections"] if s["kind"] == "scene"), None)
-    if scene:
-        try:
-            edit_photo(folder, page, scene["id"], instruction, llm)
-        except pg.ToolError:
-            pass  # keep the original photo (spec §4.1-5)
-    text = "초안을 만들었어요. 오른쪽 미리보기를 보고 고칠 점을 말씀해 주세요."
-    if page["analysis"]["questions"]:
-        text += "\n더 채우려면 알려 주세요:\n" + "\n".join(f"- {q}" for q in page["analysis"]["questions"])
-    return page, {"role": "assistant", "text": text, "tools": []}
+    state = build_draft_graph(folder, llm).invoke({"page": page, "corpus": pg.corpus_of(page, []), "seller": seller})
+    return state["page"], state["message"]
