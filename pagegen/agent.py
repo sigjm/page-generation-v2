@@ -11,7 +11,7 @@ from .llm import LLMError
 
 MAX_ROUNDS = 4
 HISTORY = 12  # the last 6 turns, user + assistant
-MUTATING = {"update_text", "edit_photo", "use_photo", "add_section", "remove_section", "move_section"}
+MUTATING = {"update_text", "edit_photo", "use_photo", "add_section", "remove_section", "move_section", "set_variant"}
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -96,6 +96,8 @@ def _run_tool(folder: Path, page: dict, name: str, args: dict, corpus: str, basi
                 return pg.move_section(page, a["section_id"], a.get("after_section_id", ""))
             case "use_photo":
                 return pg.use_photo(page, a["section_id"], a["photo_id"])
+            case "set_variant":
+                return pg.set_variant(page, a["section_id"], a["variant"])
             case "edit_photo":
                 return edit_photo(folder, page, a["section_id"], a["instruction"], llm)
     except KeyError as e:

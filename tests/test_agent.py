@@ -309,3 +309,19 @@ def test_draft_drops_a_sentence_the_judge_cannot_answer(folder):
 def test_draft_unjudgeable_headline_becomes_product_name(folder):
     page, _, _ = draft(folder, unjudgeable=["하루 종일 따뜻하게"])
     assert page["sections"][0]["headline"] == "스테인리스 텀블러"
+
+
+def test_set_variant_tool_changes_layout(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("set_variant", section_id="s1", variant="overlay")]},
+                          {"content": "글씨를 사진 위로 올렸어요."}])
+    reply, changed = agent.chat_turn(folder, page, [], "히어로 글씨를 사진 위에 올려줘", fake)
+    assert changed and page["sections"][0]["variant"] == "overlay"
+    assert reply["tools"][0]["result"] == "s1 변형을 overlay로 변경"
+
+
+def test_tools_and_rules_know_the_new_kinds():
+    from pagegen import prompts
+    names = [t["function"]["name"] for t in prompts.TOOLS]
+    assert len(names) == 8 and "set_variant" in names
+    for word in ("banner", "split", "gallery", "set_variant", "overlay", "grid-3"):
+        assert word in prompts.CHAT_RULES

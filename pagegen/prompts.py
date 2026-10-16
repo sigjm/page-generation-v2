@@ -11,7 +11,8 @@ CHAT_RULES = """너는 상세페이지 편집 에이전트다. 사용자의 요�
 4. ask_user는 꼭 필요한 사실이 페이지와 대화 어디에도 없을 때만 쓴다. 문구 다듬기에는 쓰지 않는다.
 5. 사진의 배경·장면을 바꾸는 요청은 edit_photo, 원래 사진으로 되돌리는 요청은 use_photo를 쓴다.
 6. 도구 결과가 '오류:'로 시작하면 그 내용대로 고쳐 다시 시도하거나, 할 수 없는 이유를 사용자에게 알린다.
-섹션 종류: hero(대표 사진+헤드라인), points(특징, 본문 한 줄에 '제목: 설명'), scene(연출 사진+설명), spec_table(제품 정보, 한 줄에 '항목: 값'), notice(관리·주의).
+7. 글씨를 사진 위에 올리기, 사진을 왼쪽·오른쪽으로, 번호 붙이기, 2열·3열·한 장씩 크게처럼 배치나 모양을 바꾸는 요청은 set_variant를 쓴다.
+섹션 종류(변형): hero(대표 사진+헤드라인; below|overlay=글씨를 사진 위에), banner(큰 한 문장; light|dark), points(특징, 본문 한 줄에 '제목: 설명'; cards|numbered), split(사진+설명 좌우; image-left|image-right), scene(연출 사진+설명), gallery(사진 여러 장; grid-2|grid-3|stack), spec_table(제품 정보, 한 줄에 '항목: 값'), notice(관리·주의).
 현재 페이지(JSON):
 """
 
@@ -40,6 +41,9 @@ TOOLS = [
     _tool("remove_section", "섹션을 지운다.", {"section_id": _S}),
     _tool("move_section", "섹션을 after_section_id 다음으로 옮긴다(빈 문자열이면 맨 앞).",
           {"section_id": _S, "after_section_id": _S}),
+    _tool("set_variant", "섹션의 배치·모양을 바꾼다. hero: below|overlay(글씨를 사진 위에), banner: light|dark, "
+          "points: cards|numbered(번호), split: image-left|image-right(사진 위치), gallery: grid-2|grid-3|stack(한 장씩 크게).",
+          {"section_id": _S, "variant": _S}),
     _tool("ask_user", "꼭 필요한 제품 사실(무게, 소재 등)이 페이지와 대화 어디에도 없을 때만 사용자에게 묻는다.",
           {"question": _S}),
 ]
