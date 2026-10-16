@@ -123,3 +123,90 @@ def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default
     answer = {"role": "assistant", "text": reply, "tools": log}
     chat.append(answer)
     return answer, changed
+
+
+def normalize_analysis(raw: dict, corpus: str) -> dict:
+    """Spec §3: every key present; facts only when the value appears in the seller's text."""
+    def strings(key: str, limit: int) -> list[str]:
+        items = raw.get(key)
+        return [str(x).strip() for x in items if str(x).strip()][:limit] if isinstance(items, list) else []
+
+    facts = []
+    for fact in raw.get("facts") or []:
+        if isinstance(fact, dict):
+            key, value = str(fact.get("key") or "").strip(), str(fact.get("value") or "").strip()
+            if key and value and pg.is_sourced(value, corpus):
+                facts.append({"key": key, "value": value})
+    return {"category": str(raw.get("category") or "").strip(), "visible_features": strings("visible_features", 5),
+            "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
+
+
+def build_sections(copy: dict, analysis: dict, name: str) -> tuple[list[dict], str]:
+    """Spec §4.1-4. Returns (sections without ids, scene photo instruction)."""
+    def get(block: str, key: str) -> str:
+        part = copy.get(block)
+        return str(part.get(key) or "").strip() if isinstance(part, dict) else ""
+
+    points = copy.get("points") if isinstance(copy.get("points"), dict) else {}
+    items = [i for i in points.get("items") or [] if isinstance(i, dict) and str(i.get("text") or "").strip()][:3]
+    sections = [
+        {"kind": "hero", "headline": get("hero", "headline") or name, "body": get("hero", "body"), "photo": "p1"},
+        {"kind": "points", "headline": get("points", "headline") or "이래서 좋아요",
+         "body": "\n".join(f"{str(i.get('title') or '').strip()}: {str(i['text']).strip()}" for i in items)},
+        {"kind": "scene", "headline": get("scene", "headline"), "body": get("scene", "body"), "photo": "p1"},
+        {"kind": "notice", "headline": get("notice", "headline") or "안내", "body": get("notice", "body")},
+    ]
+    if analysis["facts"]:
+        rows = "\n".join(f"{f['key']}: {f['value']}" for f in analysis["facts"])
+        sections.insert(3, {"kind": "spec_table", "headline": "제품 정보", "body": rows})
+    return sections, get("scene", "photo_instruction") or "제품이 잘 어울리는 밝은 실내 공간"
+
+
+def _clean(section: dict, corpus: str, basis: str, name: str, llm) -> None:
+    """Spec §4.1-6 for one model-written section: drop or replace whatever fails the number or claim check."""
+    if pg.unsupported_numbers(section["headline"], corpus):
+        section["headline"] = name
+    lines = [line for line in section["body"].splitlines() if line.strip() and not pg.unsupported_numbers(line, corpus)]
+    headline = section["headline"]
+    flagged = judge(llm, "\n".join([headline, *lines]), basis)
+    located = all(f in headline or any(f in line for line in lines) for f in flagged)
+    if any(f in headline for f in flagged):
+        section["headline"] = name
+    kept = [line for line in lines if not any(f in line for f in flagged)]
+    section["body"] = "\n".join(kept) if located else ""  # a phrase the judge reworded can't be located: drop it all
+
+
+def _has_content(section: dict) -> bool:
+    return bool(section["body"]) or section["kind"] in pg.PHOTO_KINDS
+
+
+def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=default_llm) -> tuple[dict, dict]:
+    """Spec §4.1. Returns (page, first assistant message). Raises LLMError and then no draft exists."""
+    page = {"id": pid, "version": 1, "product": product, "analysis": {}, "photos": photos, "sections": []}
+    corpus = pg.corpus_of(page, [])
+    seller = f"상품명: {product['name']}\n판매자 설명: {product['notes'] or '(없음)'}"
+    images = [llm.image_part(llm.model_jpeg(folder / p["file"])) for p in photos[:4]]
+    raw = llm.chat_json([{"role": "system", "content": prompts.ANALYZE_SYSTEM},
+                         {"role": "user", "content": [*images, {"type": "text", "text": seller}]}],
+                        prompts.ANALYZE_SCHEMA)
+    page["analysis"] = normalize_analysis(raw, corpus)
+    copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
+                          {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}"}],
+                         prompts.COPY_SCHEMA)
+    sections, instruction = build_sections(copy, page["analysis"], product["name"])
+    sections = [s for s in sections if _has_content(s)]
+    basis = basis_of(page, [])
+    for section in sections:
+        if section["kind"] != "spec_table":  # built from facts that already passed the spec check
+            _clean(section, corpus, basis, product["name"], llm)
+    page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate((s for s in sections if _has_content(s)), 1)]
+    scene = next((s for s in page["sections"] if s["kind"] == "scene"), None)
+    if scene:
+        try:
+            edit_photo(folder, page, scene["id"], instruction, llm)
+        except pg.ToolError:
+            pass  # keep the original photo (spec §4.1-5)
+    text = "초안을 만들었어요. 오른쪽 미리보기를 보고 고칠 점을 말씀해 주세요."
+    if page["analysis"]["questions"]:
+        text += "\n더 채우려면 알려 주세요:\n" + "\n".join(f"- {q}" for q in page["analysis"]["questions"])
+    return page, {"role": "assistant", "text": text, "tools": []}

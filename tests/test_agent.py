@@ -176,3 +176,73 @@ def test_history_is_last_six_turns_text_only(page, folder):
     assert len(sent) == 1 + 12 + 1
     assert sent[1] == {"role": "user", "content": "user4"} and sent[-1] == {"role": "user", "content": "고마워"}
     assert reply["text"] == "네" and not changed
+
+
+ANALYSIS = {"category": "주방용품", "visible_features": ["원터치 뚜껑"], "colors": ["실버"],
+            "facts": [{"key": "용량", "value": "500ml"}, {"key": "무게", "value": "350g"}],
+            "questions": ["무게는 얼마인가요?"]}
+COPY = {"hero": {"headline": "하루 종일 따뜻하게", "body": "이중 진공 단열 텀블러"},
+        "points": {"headline": "이래서 좋아요", "items": [
+            {"title": "넉넉한 용량", "text": "500ml"}, {"title": "가벼움", "text": "350g 초경량"},
+            {"title": "보냉", "text": "차갑게도 유지"}]},
+        "scene": {"headline": "어디서나", "body": "", "photo_instruction": "원목 식탁 위"},
+        "notice": {"headline": "", "body": ""}}
+PRODUCT = {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 500ml, 색상 3종"}
+
+
+def draft(folder, jsons, edit=b"png"):
+    fake = FakeLLM(jsons=jsons, edit=edit)
+    photos = [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}]
+    page, message = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
+    return page, message, fake
+
+
+def test_draft_assembles_cleans_and_edits_scene(folder):
+    # judge calls run per section in order: hero, points, scene (empty notice is dropped before judging)
+    page, message, fake = draft(folder, [ANALYSIS, COPY, OK, flag("차갑게도 유지"), OK])
+    assert [(s["id"], s["kind"]) for s in page["sections"]] == [
+        ("s1", "hero"), ("s2", "points"), ("s3", "scene"), ("s4", "spec_table")]
+    assert page["sections"][1]["body"] == "넉넉한 용량: 500ml"  # 350g had no source, 보냉 was flagged
+    assert page["sections"][3]["body"] == "용량: 500ml"  # the 350g fact was not in the notes
+    assert page["analysis"]["facts"] == [{"key": "용량", "value": "500ml"}]
+    assert page["sections"][0]["photo"] == "p1"
+    assert page["sections"][2]["photo"] == "p1-e1" and (folder / "photos/p1-e1.png").exists()
+    assert page["version"] == 1 and page["product"] == PRODUCT
+    assert "무게는 얼마인가요?" in message["text"] and message["role"] == "assistant"
+    assert fake.json_calls[0][1]["content"][0]["type"] == "image_url"
+    assert len(fake.json_calls) == 5
+
+
+def test_draft_flagged_headline_becomes_product_name(folder):
+    page, _, _ = draft(folder, [ANALYSIS, COPY, flag("하루 종일 따뜻하게"), OK, OK])
+    assert page["sections"][0]["headline"] == "스테인리스 텀블러"
+
+
+def test_draft_unlocatable_phrase_drops_the_body(folder):
+    page, _, _ = draft(folder, [ANALYSIS, COPY, OK, flag("보냉 기능"), OK])
+    assert [s["kind"] for s in page["sections"]] == ["hero", "scene", "spec_table"]
+
+
+def test_draft_judge_failure_means_no_draft(folder):
+    with pytest.raises(LLMError):
+        draft(folder, [ANALYSIS, COPY, LLMError("down")])
+
+
+def test_draft_scene_edit_failure_keeps_original(folder):
+    page, _, _ = draft(folder, [ANALYSIS, COPY, OK, OK, OK], edit=LLMError("timeout"))
+    scene = next(s for s in page["sections"] if s["kind"] == "scene")
+    assert scene["photo"] == "p1" and len(page["photos"]) == 1
+
+
+def test_draft_broken_analysis_raises(folder):
+    with pytest.raises(LLMError):
+        draft(folder, [LLMError("JSON 두 번 실패")])
+
+
+def test_normalize_analysis_tolerates_junk():
+    raw = {"category": None, "visible_features": ["a", "", "b"], "colors": "red",
+           "facts": [{"key": "용량", "value": "500ml"}, "x", {"key": "", "value": "1"}],
+           "questions": ["q1", "q2", "q3", "q4"]}
+    assert agent.normalize_analysis(raw, "500ml") == {
+        "category": "", "visible_features": ["a", "b"], "colors": [],
+        "facts": [{"key": "용량", "value": "500ml"}], "questions": ["q1", "q2", "q3"]}
