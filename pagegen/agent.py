@@ -26,7 +26,7 @@ def judge(llm, text: str, basis: str) -> list[str]:
         return []
     data = llm.chat_json([{"role": "system", "content": prompts.JUDGE_SYSTEM},
                           {"role": "user", "content": f"{basis}\n새 문구: {text}"}],
-                         prompts.JUDGE_SCHEMA, max_tokens=400)
+                         prompts.JUDGE_SCHEMA, max_tokens=800)
     return [str(p.get("phrase") or text) for p in data.get("phrases", [])
             if p.get("type") != "mood" and p.get("supported") is not True]
 
@@ -180,10 +180,20 @@ def build_sections(copy: dict, analysis: dict, name: str) -> tuple[list[dict], s
     return sections, get("scene", "photo_instruction") or "제품이 잘 어울리는 밝은 실내 공간"
 
 
-def _clean(section: dict, corpus: str, basis: str, name: str, llm) -> None:
-    """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check."""
+def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) -> None:
+    """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check.
+    A sentence the judge cannot answer (the 9B sometimes loops until max_tokens) is dropped, not fatal."""
     def passes(text: str) -> bool:
-        return not pg.unsupported_numbers(text, corpus) and not judge(llm, text, basis)
+        if pg.unsupported_numbers(text, corpus):
+            return False
+        if not text.strip():
+            return True
+        tally["judged"] += 1
+        try:
+            return not judge(llm, text, basis)
+        except LLMError:
+            tally["failed"] += 1
+            return False  # unjudged text never reaches the page
 
     if not passes(section["headline"]):
         section["headline"] = name
@@ -218,9 +228,12 @@ def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=de
     sections, instruction = build_sections(copy, page["analysis"], product["name"])
     sections = [s for s in sections if _has_content(s)]
     basis = basis_of(page, [])
+    tally = {"judged": 0, "failed": 0}
     for section in sections:
         if section["kind"] != "spec_table":  # built from facts that already passed the spec check
-            _clean(section, corpus, basis, product["name"], llm)
+            _clean(section, corpus, basis, product["name"], llm, tally)
+    if tally["judged"] and tally["failed"] == tally["judged"]:
+        raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
     page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate((s for s in sections if _has_content(s)), 1)]
     scene = next((s for s in page["sections"] if s["kind"] == "scene"), None)
     if scene:

@@ -193,9 +193,9 @@ PRODUCT = {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 
 class JudgeByContent(FakeLLM):
     """Analysis and copy are scripted; every judge call flags the text when it contains a `bad` phrase."""
 
-    def __init__(self, scripted, bad=(), fail=False, edit=b"png"):
+    def __init__(self, scripted, bad=(), fail=False, edit=b"png", unjudgeable=()):
         super().__init__(jsons=scripted, edit=edit)
-        self.bad, self.fail, self.judged = bad, fail, []
+        self.bad, self.fail, self.unjudgeable, self.judged = bad, fail, unjudgeable, []
 
     def chat_json(self, messages, schema, **kw):
         if self.jsons:
@@ -203,12 +203,15 @@ class JudgeByContent(FakeLLM):
         if self.fail:
             raise LLMError("down")
         text = messages[1]["content"].split("새 문구: ", 1)[1]
+        if any(u in text for u in self.unjudgeable):  # e.g. the 9B looping until max_tokens, twice
+            raise LLMError("모델 응답을 두 번 받지 못했습니다: Unterminated string")
         self.judged.append(text)
         return flag(text) if any(b in text for b in self.bad) else OK
 
 
-def draft(folder, bad=(), fail=False, edit=b"png", scripted=None):
-    fake = JudgeByContent([ANALYSIS, COPY] if scripted is None else scripted, bad=bad, fail=fail, edit=edit)
+def draft(folder, bad=(), fail=False, edit=b"png", scripted=None, unjudgeable=()):
+    fake = JudgeByContent([ANALYSIS, COPY] if scripted is None else scripted, bad=bad, fail=fail, edit=edit,
+                          unjudgeable=unjudgeable)
     photos = [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}]
     page, message = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
     return page, message, fake
@@ -296,3 +299,13 @@ def test_update_judges_only_new_sentences(page, folder):
 def test_normalize_analysis_checks_numbers_in_the_whole_row():
     raw = {"facts": [{"key": "12개월 품질보증", "value": "가능"}, {"key": "용량", "value": "500ml"}]}
     assert agent.normalize_analysis(raw, "500ml, 반품 가능")["facts"] == [{"key": "용량", "value": "500ml"}]
+
+
+def test_draft_drops_a_sentence_the_judge_cannot_answer(folder):
+    page, _, _ = draft(folder, unjudgeable=["습기에 주의"])
+    assert page["sections"][-1]["body"] == "중성세제로 씻어 주세요."  # unjudged text never reaches the page
+
+
+def test_draft_unjudgeable_headline_becomes_product_name(folder):
+    page, _, _ = draft(folder, unjudgeable=["하루 종일 따뜻하게"])
+    assert page["sections"][0]["headline"] == "스테인리스 텀블러"
