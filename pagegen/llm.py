@@ -69,10 +69,12 @@ def chat_json(messages: list[dict], schema: dict, *, max_tokens: int = 1500) -> 
     """json_schema call, thinking off; one retry at temperature 0.3 (spec §4.1, §5)."""
     error: Exception | None = None
     for temperature in (0.0, 0.3):
+        content = None
         try:
-            return parse_json(chat(messages, schema=schema, max_tokens=max_tokens, temperature=temperature).get("content"))
+            content = chat(messages, schema=schema, max_tokens=max_tokens, temperature=temperature).get("content")
+            return parse_json(content)
         except (LLMError, ValueError) as e:
-            log.warning("JSON retry: %s", e)
+            log.warning("JSON retry: %s | tail=%r", e, (content or "")[-160:])
             error = e
     raise LLMError(f"모델 응답을 두 번 받지 못했습니다: {error}")
 
