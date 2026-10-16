@@ -18,7 +18,24 @@ uv run python -m pagegen.server
 
 ## 설정 (환경 변수)
 
-`MLX_URL`, `TEXT_MODEL`, `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR` — 기본값은 설계 문서 §2를 참고하세요.
+`MLX_URL`, `TEXT_MODEL`, `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR`, `PAGEGEN_TRACE`(1이면 앱도 LangSmith 추적), `LANGSMITH_API_KEY`·`LANGSMITH_PROJECT`(`.env`) — 기본값은 설계 문서 §2를 참고하세요.
+
+## 구조 (LangChain · LangGraph)
+
+- 모델 호출은 LangChain `ChatOpenAI`가 MLX Serve(OpenAI 호환 API)로 보냅니다. Qwen thinking은 `extra_body`, 도구는 `bind_tools`, JSON은 `json_schema` 구조화 출력입니다. 사진 편집만 OpenAI 표준이 아니라 직접 HTTP로 부릅니다.
+- 에이전트 흐름은 LangGraph 그래프 두 개입니다.
+
+```text
+채팅 한 턴:  START → model ⇄ tools → END   (텍스트 답, ask_user, 4라운드에서 끝)
+첫 초안:    START → analyze → caption → write_copy → assemble → check → edit_scene → first_message → END
+```
+
+- 상태는 `projects/<id>/`의 `page.json`·`chat.json`에 저장되므로 LangGraph 체크포인터는 쓰지 않습니다.
+
+## LangSmith (개발·학습 데이터만)
+
+- `.env`(git 제외)에 `LANGSMITH_API_KEY=…`를 넣으면, 평가·파인튜닝 스크립트(`scripts/eval_tools.py`, `scripts/finetune/*`)가 LangSmith에 추적·실험을 남깁니다.
+- **앱 서버는 기본으로 추적을 끕니다.** 실제 상품 설명·문구를 LangSmith로 보내려면 `PAGEGEN_TRACE=1`로 서버를 띄웁니다.
 
 ## 지키는 규칙
 

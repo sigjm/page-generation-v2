@@ -11,7 +11,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pagegen
 from pagegen import agent, llm, prompts
+
+pagegen.enable_dev_tracing("pagegen-dev")  # dev data only: traces go to LangSmith when .env has a key
 
 PAGE = {
     "product": {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 500ml, 색상 3종"},
