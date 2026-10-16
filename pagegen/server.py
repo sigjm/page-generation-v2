@@ -1,5 +1,6 @@
 """FastAPI app (spec §7): upload → draft, chat, undo, preview HTML, files, export."""
 import copy
+import os
 import threading
 from pathlib import Path
 
@@ -10,6 +11,10 @@ from pydantic import BaseModel
 
 from . import agent, render, store
 from .llm import LLMError
+
+# Real product notes and copy never leave the Mac unless the user opts in (spec 2026-10-16-langchain-adoption §4).
+if os.environ.get("PAGEGEN_TRACE") != "1":
+    os.environ["LANGSMITH_TRACING"] = os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
 app = FastAPI(title="pagegen")
 STATIC = Path(__file__).resolve().parent.parent / "static"
