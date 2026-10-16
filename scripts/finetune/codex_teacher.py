@@ -604,10 +604,10 @@ def run_label(workers: int) -> int:
     injected_sentences = _load_jsonl(INJECTED_PATH)
     validate_label, _ = _label_api()
     existing_rows = _load_jsonl(LABELS_PATH)
-    inject_only = INJECTED_PATH.exists() and bool(existing_rows)
-    sentences = injected_sentences if inject_only else original_sentences + injected_sentences
-    # every sentence, not just this stage's targets: existing original labels must survive an inject-only rerun
-    sentence_by_id = {row.get("id"): row for row in original_sentences + injected_sentences}
+    # every sentence is a target; ones with a label that still passes the checks are skipped,
+    # so deleting labels from labels.jsonl is how a set of sentences gets labeled again
+    sentences = original_sentences + injected_sentences
+    sentence_by_id = {row.get("id"): row for row in sentences}
     accepted_existing: dict[str, dict[str, Any]] = {}
     rejected_existing = Counter()
     for label in existing_rows:
@@ -635,6 +635,12 @@ def run_label(workers: int) -> int:
 - 분위기·감정·장면·추천·주관적 꾸밈말은 mood(supported=true).
 - 제품의 기능·성능·소재·크기·인증·호환·사용 가능 여부·사용/관리 지시·제조 방식·품질·내구성을 단정하면 fact. 근거 텍스트나 사진에서 보이는 것에 같은 뜻이 있으면 supported=true, 없거나 추측이 필요하면 false. 애매하면 false.
 - 근거 텍스트에 있는 판매자 주장은 근거로 본다.
+- 내용 없는 제목·안내 문구("사용 전 확인해주세요", "보관 방법", "관리 및 주의 사항")는 제품 사실을 주장하지 않으므로 mood다.
+- 근거에 있는 사실을 다른 말로 바꿔 말한 구절은 supported=true다. 예) 근거 "한 손에 쥐기 좋은 크기" → "한 손으로 잡기 편해요", 근거 "2인분" → "두 사람이 먹기 좋은 양".
+- 근거의 수치를 주관적으로 요약한 꾸밈말은 mood다. 예) 근거 "높이 120cm" → "넉넉한 높이로".
+- "간편하게", "편하게", "손쉽게" 같은 편리함 부사는 꾸밈말(mood)이다. 단 "세척이 편해요", "손이 덜 가는"처럼 제품 특성을 단정하면 fact다.
+- 입었을 때의 편안함·착용감·핏은 촉감처럼 제품 특성이므로 fact다.
+- 근거보다 강하게 말하면 supported=false다. 예) 근거 "냄새를 줄여 주는" → "냄새가 전혀 나지 않아요".
 
 {_basis_for_product(product)}
 문장:
@@ -687,8 +693,7 @@ def run_label(workers: int) -> int:
     _write_jsonl(LABELS_PATH, list(merged.values()))
     target_ids = {row.get("id") for row in sentences if row.get("product_id") in products}
     missing = len(target_ids - set(merged))
-    stage = "주입 문장" if inject_only else "전체 문장"
-    print(f"label 대상 {stage}: 신규 통과 {len(output)}개, 기존 통과 재사용 {len(accepted_existing)}개, "
+    print(f"label: 신규 통과 {len(output)}개, 기존 통과 재사용 {len(accepted_existing)}개, "
           f"누적 저장 {len(merged)}개, 대상 미통과/누락 {missing}개, 기존 라벨 탈락 {dict(rejected_existing)}, "
           f"검증 실패 이유 {dict(stats.discard_reasons)}, 호출 {stats.calls}, 실패 {stats.failures}, "
           f"재시도 {stats.retries}, 캐시 재사용 {stats.cache_hits}, 경과 {stats.elapsed}s", flush=True)
