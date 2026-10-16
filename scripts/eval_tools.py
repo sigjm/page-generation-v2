@@ -19,11 +19,13 @@ PAGE = {
     "photos": [
         {"id": "p1", "file": "photos/p1.jpg", "origin": "upload"},
         {"id": "p1-e1", "file": "photos/p1-e1.png", "origin": "edit", "source": "p1"},
+        {"id": "p2", "file": "photos/p2.jpg", "origin": "upload"},
     ],
     "sections": [
         {"id": "s1", "kind": "hero", "headline": "하루 종일 따뜻하게", "body": "이중 진공 단열 텀블러", "photo": "p1-e1"},
         {"id": "s2", "kind": "points", "headline": "이래서 좋아요", "body": "넉넉한 용량: 500ml로 하루 커피 두 잔"},
         {"id": "s3", "kind": "notice", "headline": "관리 방법", "body": "중성세제로 세척해 주세요."},
+        {"id": "s4", "kind": "gallery", "variant": "grid-2", "headline": "더 많은 모습", "body": "", "photos": ["p2"]},
     ],
 }
 
@@ -59,6 +61,8 @@ TOOL_CASES = [
     ("고마워", lambda c: c == []),
     ("본문을 좀 더 감성적으로", lambda c: any(n == "update_text" and a.get("field") == "body" for n, a in c)),
     ("대표 사진 원래 사진으로 되돌려", lambda c: has(c, "use_photo", section_id="s1", photo_id="p1")),
+    ("히어로 글씨를 사진 위에 올려줘", lambda c: has(c, "set_variant", section_id="s1", variant="overlay")),
+    ("갤러리를 3열로 바꿔줘", lambda c: has(c, "set_variant", section_id="s4", variant="grid-3")),
 ]
 
 BASIS = "근거 텍스트: 스테인리스 텀블러\n이중 진공 단열, 500ml, 색상 3종\n사진에서 보이는 것: 무광 스테인리스 표면, 원터치 뚜껑, 실버"
@@ -109,8 +113,9 @@ def main() -> int:
         judge_ok += ok
         print(f"judge {'OK ' if ok else 'BAD'} {time.perf_counter() - started:5.2f}s {text!r} -> {flagged}")
 
-    print(f"\ntools {tool_ok}/{len(TOOL_CASES)} (target ≥ 9)  judge {judge_ok}/{len(JUDGE_CASES)} (target 8)")
-    return 0 if tool_ok >= 9 and judge_ok == len(JUDGE_CASES) else 1
+    tool_target = len(TOOL_CASES) - 2
+    print(f"\ntools {tool_ok}/{len(TOOL_CASES)} (target ≥ {tool_target})  judge {judge_ok}/{len(JUDGE_CASES)} (target 8)")
+    return 0 if tool_ok >= tool_target and judge_ok == len(JUDGE_CASES) else 1
 
 
 if __name__ == "__main__":
