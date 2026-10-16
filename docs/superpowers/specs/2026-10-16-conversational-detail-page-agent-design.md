@@ -1,7 +1,7 @@
 # 대화형 상세페이지 에이전트 (page-generation-v2) 설계
 
 - 작성: 2026-10-16
-- 상태: 사용자 검토 대기
+- 상태: 승인됨 (2026-10-16). 구현 계획: `docs/superpowers/plans/2026-10-16-conversational-detail-page-agent.md`
 - 이전 버전: `../page-generation-improve` (v1, BE 연동 서비스). v2는 이식이 아니라 새 제품이다.
 
 ## 1. 목표
@@ -94,7 +94,7 @@ MLX Serve :11234  (앱으로 이미 실행 중, --model-dir ~/.mlx-serve/models)
 - `analysis`는 첫 초안 때 한 번 만들고 바꾸지 않는다. 모든 키가 필수이며 빈 목록을 허용한다. `facts`는 설명(`notes`)에서 뽑은 `{key, value}`이고, `value`가 §5 스펙 표 검사를 통과한 것만 저장한다. `visible_features`·`colors`는 주장 검사(§5)의 사진 근거로 쓴다.
 - 섹션 필드는 모든 종류가 같다: `id`, `kind`, `headline`, `body`, `photo`(있을 때만).
 - `kind`는 5종: `hero`, `points`, `scene`, `spec_table`, `notice`.
-- `points`·`spec_table`의 `body`는 한 줄에 하나씩 `"제목: 설명"` / `"항목: 값"`. 렌더러가 첫 `": "`에서 나눈다. `notice`의 `body`는 줄바꿈을 문단 구분으로 쓴다.
+- `points`·`spec_table`의 `body`는 한 줄에 하나씩 `"제목: 설명"` / `"항목: 값"`. 근거 검사와 렌더러 모두 첫 `":"`에서 나누고 양쪽 공백을 지운다(`page.split_line`). 9B가 `"용량:500ml"`처럼 공백 없이 쓰거나 값에 `:`이 들어가도(`"10:30"`) 같은 결과가 나온다. `notice`의 `body`는 줄바꿈을 문단 구분으로 쓴다.
 - `photo`가 필요한 종류는 `hero`, `scene`. 나머지는 `photo`를 무시한다.
 - `photos[].file`은 프로젝트 폴더 기준 상대 경로. 업로드는 `origin: "upload"`, 편집본은 `origin: "edit"`와 `source`(원본 id)를 가진다.
 - 섹션 id는 `s1`부터, 새 섹션은 기존 최대 번호 + 1. 사진 id는 업로드 `p1…pN`, 편집본 `<원본id>-e<번호>`.
@@ -118,10 +118,10 @@ projects/<id>/
 
 1. 업로드 저장. 최대 6장, 장당 20MB. Pillow로 형식을 판별해 JPEG·PNG·WebP만 받고(HEIC 등은 400 "JPG·PNG로 변환해 올려 주세요"), `Image.MAX_IMAGE_PIXELS = 40_000_000`으로 압축 폭탄을 막는다. **원본 바이트를 그대로** 저장하고, 파일명은 서버가 판별한 형식으로 정한다(`p1.jpg`·`p1.png`·`p1.webp`). 모델에는 EXIF 방향을 적용(`ImageOps.exif_transpose`)하고 긴 변 1,280px로 줄인 JPEG 사본을 보낸다(최대 4장).
 2. **분석** (비전, `response_format: json_schema`): `category`, `visible_features[]`, `colors[]`, `facts[]`(설명에서 뽑은 `{key, value}`), `questions[]`(빠진 중요 정보, 최대 3개).
-3. **문구** (텍스트, `json_schema`): 입력은 상품명·설명·분석 결과. 출력은 `hero{headline, body}`, `points[{title, text}]`(3개), `scene{headline, body, photo_instruction}`, `notice{headline, body}`.
+3. **문구** (텍스트, `json_schema`): 입력은 상품명·설명·분석 결과. 출력은 `hero{headline, body}`, `points{headline, items[{title, text}]}`(items 3개), `scene{headline, body, photo_instruction}`, `notice{headline, body}`.
 4. **섹션 조립**: `hero(p1)` → `points` → `scene` → `spec_table`(분석 `facts` 중 근거 검사를 통과한 것, 없으면 섹션 생략) → `notice`(본문이 비면 생략).
 5. **연출 컷 1장**: `scene.photo_instruction`으로 `p1`을 편집해 `scene` 섹션에 넣는다. 실패하면 `p1`을 그대로 쓴다.
-6. **초안 검사**: 모델이 만든 모든 문구(`hero`·`points`·`scene`·`notice`의 `headline`·`body`)에 숫자 검사와 주장 검사(§5)를 건다. 주장 검사는 섹션 문구를 한 번에 묶은 판정 호출 1회이며 `{"unsupported": [{"section_id", "text"}]}`를 돌려준다. 걸린 `body` 줄은 버리고, 걸린 `headline`은 상품명으로 바꾼다. `spec_table`은 `facts`에서 만들므로 스펙 표 검사만 받는다. 판정 호출이 두 번 실패하면 초안을 만들지 않고 오류를 보여준다(근거 없는 문구를 통과시키지 않는다).
+6. **초안 검사**: 모델이 만든 모든 문구(`hero`·`points`·`scene`·`notice`의 `headline`·`body`)에 숫자 검사와 주장 검사(§5)를 건다. 주장 검사는 섹션마다 판정 호출 1회다(9B는 한 문구씩 판정할 때 정확했다). 걸린 `body` 줄은 버리고, 걸린 `headline`은 상품명으로 바꾼다. 판정이 고른 구절을 문구에서 찾지 못하면(모델이 바꿔 쓴 경우) 그 섹션 본문을 비운다. 본문이 빈 `points`·`notice`·`spec_table`은 뺀다. `spec_table`은 `facts`에서 만들므로 스펙 표 검사만 받는다. 판정 호출이 두 번 실패하면 초안을 만들지 않고 오류를 보여준다(근거 없는 문구를 통과시키지 않는다).
 7. 첫 assistant 메시지: 초안 완료 + `questions`가 있으면 그 질문들.
 
 2와 3을 나눈 이유: 한 번에 긴 JSON을 내게 하면 9B가 같은 문장을 반복하다 출력 한도에서 잘리는 문제가 v1에서 있었다. 각 호출은 `max_tokens` 1,500으로 제한한다. JSON이 깨지면 한 번 다시 부르고(temperature 0.3), 또 깨지면 오류를 보여주고 초안을 만들지 않는다.
@@ -156,7 +156,7 @@ UI의 "되돌리기" 버튼 → `POST /projects/{id}/undo` → 가장 최근 `ve
 - **숫자 검사**: 새 문구(`headline`·`body`)와 근거 텍스트에서 정규식 `(\d+(?:[.,]\d+)?)\s*([a-zA-Z%℃°]+)?`로 `(숫자, 단위)` 쌍을 뽑는다(단위는 소문자로, 쉼표 소수점은 점으로 정규화). 새 문구의 쌍이 단위를 가지면 같은 쌍이, 단위가 없으면 같은 숫자가 근거에 있어야 한다. 부분 문자열 비교가 아니다: "5"는 "500ml"로, "500g"은 "500ml"로 근거가 생기지 않는다.
   `# ponytail: 단위는 라틴 문자·%·℃만 인식. "3시간"·"2인분" 같은 한글 단위는 숫자만 비교하며 주장 검사가 보완한다`
 - **스펙 표 검사**: `spec_table`의 각 줄 값(`": "` 뒤)이 근거 텍스트에 공백을 무시하고 그대로 들어 있어야 한다.
-- **주장 검사**: `update_text`·`add_section`의 새 문구는 숫자 검사를 통과한 뒤 판정 호출을 한 번 더 거친다. 입력은 근거 텍스트 + 분석의 `visible_features`·`colors` + 새 문구, 출력은 `json_schema` `{"unsupported": ["…"]}`(근거에 없는 제품 사실: 기능·소재·성능·인증·호환). 비어 있지 않으면 거절하고 `"오류: 근거 없는 주장 '냉 보온'. 빼거나 ask_user로 물어보세요."`를 모델에게 돌려준다. thinking 끔, `max_tokens` 200, 건당 1초 안팎. 판정 호출이 실패하면(서버 오류·JSON 깨짐) 한 번 다시 부르고, 또 실패하면 **반영하지 않는다**(fail-closed). 도구 결과는 `"오류: 주장 검사를 하지 못해 반영하지 않았습니다."`이고 채팅 답에도 그 사실이 남는다.
+- **주장 검사**: `update_text`·`add_section`의 새 문구는 숫자 검사를 통과한 뒤 판정 호출을 한 번 더 거친다. 입력은 근거 텍스트 + 분석의 `visible_features`·`colors` + 새 문구, 출력은 `json_schema` `{"phrases": [{"phrase", "type": "fact"|"mood", "supported"}]}`이고, `type`이 `mood`가 아니면서 `supported`가 `true`가 아닌 구절이 근거 없는 주장이다. 계획 단계 실측(2026-10-16, base 9B, 8건): 걸러낼 목록만 내게 한 방식은 8건 중 2~3건(감성 문구까지 모두 걸러냄), 구절을 나눠 사실/분위기로 분류하는 방식은 thinking 끔으로 8건 중 7건·평균 0.9초, thinking 켬은 빈 응답 때문에 5/8이었다. 비어 있지 않으면 거절하고 `"오류: 근거 없는 주장 '냉 보온'. 빼거나 ask_user로 물어보세요."`를 모델에게 돌려준다. thinking 끔, `max_tokens` 400, 건당 1초 안팎. 판정 호출이 실패하면(서버 오류·JSON 깨짐) 한 번 다시 부르고, 또 실패하면 **반영하지 않는다**(fail-closed). 도구 결과는 `"오류: 주장 검사를 하지 못해 반영하지 않았습니다."`이고 채팅 답에도 그 사실이 남는다.
   - 근거: 스파이크에서 시스템 프롬프트가 "사용자 메모에 없는 사실은 지어내지 말라"고 명시했는데도 base/thinking off가 "따뜻하고 차갑게"(냉 보온, 입력에 없음)를 써 넣었다. 프롬프트만으로는 막히지 않는다.
   - 감성 표현("하루를 산뜻하게")은 사실이 아니므로 통과해야 한다. 판정 프롬프트에 이 구분과 예시를 넣는다.
 - **판매자 주장은 근거다.** 사용자가 "식기세척기 사용 가능하다고 써줘"라고 하면 그 메시지가 근거 텍스트에 들어가므로 그대로 쓴다. 사실 여부의 책임은 판매자에게 있고, 에이전트가 막는 대상은 **모델이 스스로 덧붙인** 사실이다.
@@ -182,9 +182,9 @@ UI의 "되돌리기" 버튼 → `POST /projects/{id}/undo` → 가장 최근 `ve
 | 메서드·경로 | 입력 | 출력 |
 |---|---|---|
 | `GET /` | — | `static/index.html` |
-| `POST /projects` | multipart: `photos[]`, `name`, `notes` | `{id, version, messages}` (초안 완료 후 응답) |
+| `POST /projects` | multipart: `photos`(여러 개), `name`, `notes` | `{id, version, messages}` (초안 완료 후 응답) |
 | `GET /projects/{id}` | — | `{page, chat}` (새로고침 복원용) |
-| `POST /projects/{id}/chat` | `{"text": "…"}` | `{reply, tools, version}` |
+| `POST /projects/{id}/chat` | `{"text": "…"}` | `{reply, version}` (`reply.tools`에 도구 기록) |
 | `POST /projects/{id}/undo` | — | `{version}`, 되돌릴 게 없으면 409 |
 | `GET /projects/{id}/page` | — | 페이지 HTML (미리보기·캡처 공용) |
 | `GET /projects/{id}/photos/{file}` | — | 사진 파일 |
@@ -212,7 +212,7 @@ UI의 "되돌리기" 버튼 → `POST /projects/{id}/undo` → 가장 최근 `ve
 {"error": "사람이 읽을 한국어 문장"}
 ```
 
-- 상태 코드: 입력 오류 400, 없는 프로젝트 404, 되돌릴 것 없음 409, 모델 서버 오류 502. 다른 모델 작업이 진행 중이면 대기한다(단일 사용자이므로 409를 내지 않는다).
+- 상태 코드: 입력 오류 400(필수 필드 누락 같은 요청 형식 오류도 422가 아니라 400), 없는 프로젝트 404, 되돌릴 것 없음 409, 모델 서버 오류 502. 다른 모델 작업이 진행 중이면 대기한다(단일 사용자이므로 409를 내지 않는다).
 - 채팅에서 모델 서버 오류가 나면 502와 `error`를 돌려주고 `chat.json`에는 사용자 메시지만 남긴다.
 - `GET /projects/{id}/photos/{file}`·`/export/…`는 `page.json`의 `photos[].file`에 있거나 `export/` 아래에서 서버가 만든 파일만 돌려준다. 이름은 `^[\w.-]+$`만 받고, 해석한 경로가 프로젝트 폴더 밖이면 404. MIME은 확장자로 정한다.
 - 서버는 `127.0.0.1`에만 바인딩한다.
@@ -267,11 +267,11 @@ Codex 스파이크(2026-10-16, `.orchestration/tasks/2026-10-16-mlx-probe.md`): 
 ## 11. 테스트
 
 - `tests/test_page.py`: 도구 7개(없는 id, 순서 변경, `use_photo`, 섹션 id 부여), 숫자·스펙 표 근거 검사(근거 없는 숫자 거절, 채팅 답변 후 허용), 버전 저장·되돌리기, HTML 이스케이프.
-- `tests/test_agent.py`: 가짜 LLM 함수로 채팅 루프 — 도구 오류가 모델에게 돌아감, `ask_user`로 턴 종료, 4라운드 상한, 초안 JSON 재시도, 주장 검사가 `unsupported`를 내면 거절되고 판정 호출이 실패하면 통과, 비전 응답의 코드 펜스 제거.
+- `tests/test_agent.py`: 가짜 LLM 함수로 채팅 루프 — 도구 오류가 모델에게 돌아감, `ask_user`로 턴 종료, 4라운드 상한, 초안 JSON 재시도, 주장 검사가 근거 없는 구절을 내면 거절되고 판정 호출이 두 번 실패하면 반영하지 않음(fail-closed), 비전 응답의 코드 펜스 제거.
 - `scripts/smoke.py`: 실제 MLX Serve로 사진 3장(정사각·가로·세로 각 1) → 초안 → 채팅 3건 → 내보내기. 단계별 시간, 분석·문구 `json_schema` 응답이 바로 파싱됐는지(재시도 횟수), 편집 결과의 비율 왜곡 여부를 기록.
 - `scripts/eval_tools.py`: 도구 스키마와 시스템 프롬프트를 `pagegen`에서 가져와(복사본이 아니라) 실제 계약으로 잰다. 실모델 회귀 기준:
   - 도구: 스파이크 10건을 7개 도구 계약으로 옮기고 `use_photo`("원래 사진으로 되돌려") 1건을 더한 11건. base/on 9/11 이상, #1(짧게)·#10(감성적으로)은 되묻지 않고 고친다.
-  - 주장 검사: "하루 종일 따뜻하고 차갑게"(냉 보온 근거 없음)·"식기세척기 사용 가능"(근거 없음) 거절, 사용자가 말한 뒤의 "식기세척기 사용 가능" 통과, 감성 문구 3개("하루를 산뜻하게" 등) 통과. 6/6.
+  - 주장 검사 8건: 거절 3건("하루 종일 따뜻하고 차갑게", 근거 없는 "식기세척기 사용 가능", "12시간 보냉 유지"), 통과 5건(사용자가 말한 뒤의 "식기세척기 사용 가능", 근거 있는 "이중 진공 단열로 따뜻함이 오래가요", 감성 문구 3개). 목표 8/8. 계획 단계 실측은 7/8("따뜻하고 차갑게"를 분위기로 판정).
   - 못 미치면 실패 사례로 프롬프트를 고쳐 다시 잰다. 모델·thinking 설정을 바꿀 때마다 다시 돌린다.
 
 ## 12. 작업 분담
