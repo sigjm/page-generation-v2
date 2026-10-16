@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상세페이지 에이전트</title>
+<style>
+  :root { --line: #e5e5ea; --muted: #6e6e73; --accent: #0a66ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: grid; grid-template-columns: 420px 1fr;
+         font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; color: #1d1d1f; }
+  aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; line-height: 1.5; font-size: 14px; max-width: 92%; }
+  .user { align-self: flex-end; background: var(--accent); color: #fff; }
+  .assistant { align-self: flex-start; background: #f2f2f7; }
+  .error { align-self: stretch; background: #fff1f0; color: #c00; }
+  .tools { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  form { padding: 12px 16px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+  input, textarea, button { font: inherit; font-size: 14px; }
+  textarea, input[type=text] { padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+  textarea { resize: vertical; min-height: 56px; }
+  button { padding: 8px 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: #f2f2f7; color: #1d1d1f; }
+  button:disabled, textarea:disabled, input:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #busy { display: none; padding: 0 16px 8px; font-size: 13px; color: var(--muted); }
+  body.busy #busy { display: block; }
+  main { overflow: auto; background: #f2f2f7; display: flex; justify-content: center; }
+  iframe { width: 860px; height: 100%; border: 0; background: #fff; }
+  #empty { margin: auto; color: var(--muted); }
+  #links a { display: block; font-size: 13px; }
+</style>
+</head>
+<body>
+<aside>
+  <div id="log"></div>
+  <div id="busy">작업 중이에요… 사진 편집이 들어가면 1분 정도 걸려요.</div>
+  <form id="start">
+    <input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
+    <input type="text" name="name" placeholder="상품명" required>
+    <textarea name="notes" placeholder="상품 설명 (용량, 소재, 관리 방법 등 아는 것을 자유롭게)"></textarea>
+    <button>초안 만들기</button>
+  </form>
+  <form id="chat" hidden>
+    <textarea name="text" placeholder="예: 헤드라인을 더 짧게 / 배경을 대리석으로" required></textarea>
+    <div class="row">
+      <button>보내기</button>
+      <button type="button" class="secondary" id="undo">되돌리기</button>
+      <button type="button" class="secondary" id="export">내보내기</button>
+      <button type="button" class="secondary" id="new">새 상품</button>
+    </div>
+    <div id="links"></div>
+  </form>
+</aside>
+<main>
+  <p id="empty">사진과 설명을 올리면 초안이 여기에 보여요.</p>
+  <iframe id="preview" title="상세페이지 미리보기" hidden></iframe>
+</main>
+<script>
+const $ = (selector) => document.querySelector(selector);
+let projectId = location.hash.slice(1);
+
+function addMessage(m) {
+  const div = document.createElement("div");
+  div.className = "msg " + m.role;
+  div.textContent = m.text;
+  if (m.tools && m.tools.length) {
+    const tools = document.createElement("div");
+    tools.className = "tools";
+    tools.textContent = m.tools.map((t) => (t.ok ? "✓ " : "✗ ") + t.name + " — " + t.result).join("\n");
+    div.appendChild(tools);
+  }
+  $("#log").appendChild(div);
+  $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+function showError(error) { addMessage({ role: "error", text: error.message }); }
+
+function showPreview(version) {
+  $("#empty").hidden = true;
+  $("#preview").hidden = false;
+  $("#preview").src = `/projects/${projectId}/page?v=${version}`;
+}
+
+function setBusy(busy) {
+  document.body.classList.toggle("busy", busy);
+  document.querySelectorAll("button, textarea, input").forEach((el) => (el.disabled = busy));
+}
+
+async function call(url, options = {}) {
+  setBusy(true);
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({ error: `서버 오류 (${res.status})` }));
+    if (!res.ok) throw new Error(data.error || `서버 오류 (${res.status})`);
+    return data;
+  } finally {
+    setBusy(false);
+  }
+}
+
+function openProject(id, chat, version) {
+  projectId = id;
+  location.hash = id;
+  $("#start").hidden = true;
+  $("#chat").hidden = false;
+  chat.forEach(addMessage);
+  showPreview(version);
+}
+
+$("#start").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try {
+    const data = await call("/projects", { method: "POST", body: new FormData(ev.target) });
+    openProject(data.id, data.messages, data.version);
+  } catch (e) { showError(e); }
+});
+
+$("#chat").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const box = ev.target.elements.text;
+  const text = box.value.trim();
+  if (!text) return;
+  addMessage({ role: "user", text });
+  box.value = "";
+  try {
+    const data = await call(`/projects/${projectId}/chat`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+    });
+    addMessage(data.reply);
+    showPreview(data.version);
+  } catch (e) { showError(e); }
+});
+
+// Enter sends, Shift+Enter breaks the line; never send while the Korean IME is still composing.
+$("#chat textarea").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+    ev.preventDefault();
+    $("#chat").requestSubmit();
+  }
+});
+
+$("#undo").addEventListener("click", async () => {
+  try {
+    const data = await call(`/projects/${projectId}/undo`, { method: "POST" });
+    addMessage({ role: "assistant", text: "한 단계 되돌렸어요." });
+    showPreview(data.version);
+  } catch (e) { showError(e); }
+});
+
+$("#export").addEventListener("click", async () => {
+  try {
+    const data = await call(`/projects/${projectId}/export`, { method: "POST" });
+    const links = [["전체 PNG", data.png], ["전체 JPG", data.jpg], ...data.sections.map((u, i) => [`섹션 ${i + 1}`, u])];
+    $("#links").replaceChildren(...links.map(([label, url]) => {
+      const a = document.createElement("a");
+      a.href = url;
+      a.textContent = label;
+      a.download = "";
+      return a;
+    }));
+  } catch (e) { showError(e); }
+});
+
+$("#new").addEventListener("click", () => { location.hash = ""; location.reload(); });
+
+if (projectId) {
+  fetch(`/projects/${projectId}`)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error("프로젝트를 찾을 수 없어요."))))
+    .then((d) => openProject(projectId, d.chat, d.page.version))
+    .catch((e) => { location.hash = ""; projectId = ""; showError(e); });
+}
+</script>
+</body>
+</html>
