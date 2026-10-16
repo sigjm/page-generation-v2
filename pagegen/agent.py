@@ -201,7 +201,8 @@ def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) 
     """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check.
     A sentence the judge cannot answer (the 9B sometimes loops until max_tokens) is dropped, not fatal."""
     def passes(text: str) -> bool:
-        if pg.unsupported_numbers(text, corpus) or pg.unsupported_superlatives(text, corpus):
+        if (pg.unsupported_numbers(text, corpus) or pg.unsupported_superlatives(text, corpus)
+                or pg.unsupported_hanja(text, corpus)):
             return False
         if not text.strip():
             return True

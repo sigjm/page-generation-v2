@@ -398,3 +398,10 @@ def test_draft_banner_repeating_the_hero_is_dropped(folder):
 def test_draft_failed_caption_sends_the_photo_to_gallery(folder):
     page, _ = draft_n(folder, 2, captions=[LLMError("JSON 두 번 실패")], copy={**COPY_L, "details": []})
     assert layout(page)[3:5] == [("scene", None, "p1-e1"), ("gallery", "stack", ["p2"])]
+
+
+def test_draft_hanja_in_headline_falls_back_to_product_name(folder):
+    copy = {**COPY_L, "hero": {"headline": "고雅的한 텀블러", "body": "이중 진공 단열 텀블러."}, "details": []}
+    page, fake = draft_n(folder, 1, copy=copy)
+    assert page["sections"][0]["headline"] == "스테인리스 텀블러"
+    assert "고雅的한 텀블러" not in fake.judged  # rejected mechanically, no judge call

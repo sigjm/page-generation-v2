@@ -9,6 +9,7 @@ VARIANTS = {"hero": ("below", "overlay"), "banner": ("light", "dark"), "points":
 SUPERLATIVES = ("최고", "최상", "최초", "1위", "완벽", "유일", "최저가", "넘버원", "no.1")
 GALLERY_TITLE = "더 많은 모습"
 _NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)\s*([a-zA-Z%℃°]+)?")
+_HANJA = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 
 
 class ToolError(Exception):
@@ -61,6 +62,11 @@ def unsupported_superlatives(text: str, corpus: str) -> list[str]:
     return [word for word in SUPERLATIVES if word in low and word not in have]
 
 
+def unsupported_hanja(text: str, corpus: str) -> list[str]:
+    """Chinese characters the seller never wrote: the Qwen-based 9B sometimes slips them into Korean copy ("고雅的한")."""
+    return [run for run in _HANJA.findall(text) if run not in corpus]
+
+
 def check_text(text: str, corpus: str, *, spec: bool = False) -> None:
     bad = unsupported_numbers(text, corpus)
     if bad:
@@ -68,6 +74,9 @@ def check_text(text: str, corpus: str, *, spec: bool = False) -> None:
     bad = unsupported_superlatives(text, corpus)
     if bad:
         raise ToolError(f"오류: 근거 없는 최상급 표현 '{', '.join(bad)}'. 빼고 다시 쓰세요.")
+    bad = unsupported_hanja(text, corpus)
+    if bad:
+        raise ToolError(f"오류: 한자 '{', '.join(bad)}'가 섞였습니다. 한글로 다시 쓰세요.")
     bad = unsupported_spec_values(text, corpus) if spec else []
     if bad:
         raise ToolError(f"오류: 근거 없는 스펙 값 {', '.join(bad)}. 사용자에게 ask_user로 물어보세요.")

@@ -167,3 +167,10 @@ def test_photo_tools_reject_gallery(page):
         pg.use_photo(page, "s4", "p1")
     with pytest.raises(pg.ToolError, match="하나씩 바꿀 수 없습니다"):
         pg.edit_source(page, "s4")
+
+
+def test_hanja_needs_a_source(page):
+    assert pg.unsupported_hanja("고雅的한 전통 화병", CORPUS) == ["雅的"]
+    assert pg.unsupported_hanja("雅한 화병", CORPUS + " 雅") == []
+    with pytest.raises(pg.ToolError, match="한자 '雅的'"):
+        pg.update_text(page, "s1", "headline", "고雅的한 텀블러", CORPUS)
