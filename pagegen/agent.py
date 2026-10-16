@@ -24,13 +24,16 @@ def basis_of(page: dict, chat: list[dict]) -> str:
     return f"근거 텍스트: {pg.corpus_of(page, chat)}\n사진에서 보이는 것: {', '.join(seen) or '(없음)'}"
 
 
+def judge_messages(text: str, basis: str) -> list[dict]:
+    """The exact judge prompt; the fine-tuning data (scripts/finetune) is built with this same function."""
+    return [{"role": "system", "content": prompts.JUDGE_SYSTEM}, {"role": "user", "content": f"{basis}\n새 문구: {text}"}]
+
+
 def judge(llm, text: str, basis: str) -> list[str]:
     """Phrases of `text` asserting product facts missing from `basis` (spec §5). Raises LLMError: fail-closed."""
     if not text.strip():
         return []
-    data = llm.chat_json([{"role": "system", "content": prompts.JUDGE_SYSTEM},
-                          {"role": "user", "content": f"{basis}\n새 문구: {text}"}],
-                         prompts.JUDGE_SCHEMA, max_tokens=800)
+    data = llm.chat_json(judge_messages(text, basis), prompts.JUDGE_SCHEMA, max_tokens=800, model=llm.JUDGE_MODEL)
     return [str(p.get("phrase") or text) for p in data.get("phrases", [])
             if p.get("type") != "mood" and p.get("supported") is not True]
 

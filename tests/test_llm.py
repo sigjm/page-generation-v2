@@ -175,3 +175,7 @@ def test_edit_image_request_shape(monkeypatch, tmp_path):
         "model": llm.IMAGE_MODEL, "mode": "edit", "size": "1024x1024", "steps": llm.IMAGE_STEPS,
         "strength": 0.3, "response_format": "b64_json"}
     assert sent["prompt"].startswith("대리석 위") and not sent["image"].startswith("data:")
+
+
+def test_judge_model_defaults_to_text_model():
+    assert llm.JUDGE_MODEL == llm.TEXT_MODEL  # JUDGE_MODEL is not set in tests

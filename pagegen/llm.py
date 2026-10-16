@@ -19,6 +19,7 @@ MLX_URL = os.environ.get("MLX_URL", "http://127.0.0.1:11234")
 TEXT_MODEL = os.environ.get("TEXT_MODEL", "empero-ai/Qwen3.8-9B-Distill-MLX-4bit")
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "ddalcu/Qwen-Image-2.1-MLX-Serve-4bit")
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "20"))
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", TEXT_MODEL)  # the claim judge can run on its own fine-tuned model
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 log = logging.getLogger("pagegen")
 
