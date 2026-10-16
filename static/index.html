@@ -7,6 +7,7 @@
 <style>
   :root { --line: #e5e5ea; --muted: #6e6e73; --accent: #0a66ff; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; } /* `form { display: grid }` would otherwise beat the hidden attribute */
   body { margin: 0; height: 100vh; display: grid; grid-template-columns: 420px 1fr;
          font-family: -apple-system, "Apple SD Gothic Neo", sans-serif; color: #1d1d1f; }
   aside { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
