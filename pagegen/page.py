@@ -2,9 +2,14 @@
 import re
 from collections.abc import Callable
 
-KINDS = ("hero", "points", "scene", "spec_table", "notice")
-PHOTO_KINDS = ("hero", "scene")
+KINDS = ("hero", "banner", "points", "split", "scene", "gallery", "spec_table", "notice")
+PHOTO_KINDS = ("hero", "scene", "split")
+VARIANTS = {"hero": ("below", "overlay"), "banner": ("light", "dark"), "points": ("cards", "numbered"),
+            "split": ("image-left", "image-right"), "gallery": ("grid-2", "grid-3", "stack")}
+SUPERLATIVES = ("최고", "최상", "최초", "1위", "완벽", "유일", "최저가", "넘버원", "no.1")
+GALLERY_TITLE = "더 많은 모습"
 _NUMBER = re.compile(r"(\d+(?:[.,]\d+)?)\s*([a-zA-Z%℃°]+)?")
+_HANJA = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 
 
 class ToolError(Exception):
@@ -51,10 +56,27 @@ def unsupported_spec_values(body: str, corpus: str) -> list[str]:
     return [v for v in values if not is_sourced(v, corpus)]
 
 
+def unsupported_superlatives(text: str, corpus: str) -> list[str]:
+    # ponytail: fixed word list; roundabout wording ("가장 좋은") is left to the claim judge
+    low, have = text.casefold(), corpus.casefold()
+    return [word for word in SUPERLATIVES if word in low and word not in have]
+
+
+def unsupported_hanja(text: str, corpus: str) -> list[str]:
+    """Chinese characters the seller never wrote: the Qwen-based 9B sometimes slips them into Korean copy ("고雅的한")."""
+    return [run for run in _HANJA.findall(text) if run not in corpus]
+
+
 def check_text(text: str, corpus: str, *, spec: bool = False) -> None:
     bad = unsupported_numbers(text, corpus)
     if bad:
         raise ToolError(f"오류: 근거 없는 숫자 {', '.join(bad)}. 사용자에게 ask_user로 물어보세요.")
+    bad = unsupported_superlatives(text, corpus)
+    if bad:
+        raise ToolError(f"오류: 근거 없는 최상급 표현 '{', '.join(bad)}'. 빼고 다시 쓰세요.")
+    bad = unsupported_hanja(text, corpus)
+    if bad:
+        raise ToolError(f"오류: 한자 '{', '.join(bad)}'가 섞였습니다. 한글로 다시 쓰세요.")
     bad = unsupported_spec_values(text, corpus) if spec else []
     if bad:
         raise ToolError(f"오류: 근거 없는 스펙 값 {', '.join(bad)}. 사용자에게 ask_user로 물어보세요.")
@@ -102,12 +124,30 @@ def add_section(page: dict, kind: str, after_section_id: str, headline: str, bod
     position = _index(page, after_section_id) + 1 if after_section_id else 0
     check_text(headline, corpus)
     check_text(body, corpus, spec=kind == "spec_table")
-    verify(f"{headline}\n{body}")
     section = {"id": next_section_id(page), "kind": kind, "headline": headline, "body": body}
-    if kind in PHOTO_KINDS:
-        section["photo"] = page["photos"][0]["id"]
+    if kind in VARIANTS:
+        section["variant"] = VARIANTS[kind][0]
+    uploads = [p["id"] for p in page["photos"] if p["origin"] == "upload"]
+    if kind == "gallery":
+        section["photos"] = uploads[1:]
+        if not section["photos"]:
+            raise ToolError("오류: 갤러리에 넣을 추가 사진이 없습니다.")
+    elif kind in PHOTO_KINDS:
+        section["photo"] = uploads[1] if kind == "split" and len(uploads) > 1 else uploads[0]
+    verify(f"{headline}\n{body}")
     page["sections"].insert(position, section)
     return f"{section['id']}({kind}) 추가"
+
+
+def set_variant(page: dict, section_id: str, variant: str) -> str:
+    section = find_section(page, section_id)
+    allowed = VARIANTS.get(section["kind"])
+    if not allowed:
+        raise ToolError(f"오류: {section['kind']} 섹션은 변형이 없습니다.")
+    if variant not in allowed:
+        raise ToolError(f"오류: {section['kind']} 변형은 {', '.join(allowed)} 중 하나입니다.")
+    section["variant"] = variant
+    return f"{section_id} 변형을 {variant}로 변경"
 
 
 def remove_section(page: dict, section_id: str) -> str:
@@ -129,8 +169,10 @@ def move_section(page: dict, section_id: str, after_section_id: str) -> str:
 
 def _photo_section(page: dict, section_id: str) -> dict:
     section = find_section(page, section_id)
+    if section["kind"] == "gallery":
+        raise ToolError("오류: gallery 섹션은 사진을 하나씩 바꿀 수 없습니다. remove_section 후 add_section(gallery)를 쓰세요.")
     if section["kind"] not in PHOTO_KINDS:
-        raise ToolError(f"오류: {section['kind']} 섹션에는 사진이 없습니다. 사진은 hero·scene에만 있습니다.")
+        raise ToolError(f"오류: {section['kind']} 섹션에는 사진이 없습니다. 사진은 hero·scene·split에만 있습니다.")
     return section
 
 

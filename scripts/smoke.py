@@ -9,6 +9,7 @@ draft (with its staged scene edit). The square project then gets three chat edit
 import argparse
 import io
 import json
+import mimetypes
 import sys
 import time
 from pathlib import Path
@@ -47,6 +48,7 @@ def timed(fn, *args, **kwargs):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--photo", type=Path, required=True)
+    parser.add_argument("--extra", type=Path, nargs="*", default=[])
     parser.add_argument("--name", default="스테인리스 텀블러")
     parser.add_argument("--notes", default="이중 진공 단열, 500ml, 색상 3종. 중성세제로 손세척 권장")
     parser.add_argument("--server", default="http://127.0.0.1:8000")
@@ -104,6 +106,28 @@ def main() -> int:
             png = client.get(r.json()["png"]).content
             (args.out / "page.png").write_bytes(png)
             entry["export"]["png_size"] = Image.open(io.BytesIO(png)).size
+        else:
+            failed = True
+
+    if args.extra:
+        files = [("photos", (p.name, p.read_bytes(), mimetypes.guess_type(p.name)[0] or "image/jpeg"))
+                 for p in [args.photo, *args.extra]]
+        r, seconds = timed(client.post, "/projects", data={"name": args.name, "notes": args.notes}, files=files)
+        entry = {"status": r.status_code, "draft_seconds": seconds, "body": r.json()}
+        report["multi"] = entry
+        print(f"multi ({len(files)} photos): draft {r.status_code} in {seconds}s", flush=True)
+        if r.status_code == 200:
+            pid = entry["body"]["id"]
+            page = client.get(f"/projects/{pid}").json()["page"]
+            used = {s.get("photo") for s in page["sections"]} | {p for s in page["sections"] for p in s.get("photos", [])}
+            uploads = [p["id"] for p in page["photos"] if p["origin"] == "upload"]
+            entry["layout"] = [(s["kind"], s.get("variant"), s.get("photo") or s.get("photos")) for s in page["sections"]]
+            entry["unused_uploads"] = [u for u in uploads if u not in used]
+            failed |= bool(entry["unused_uploads"])
+            r = client.post(f"/projects/{pid}/export")
+            if r.status_code == 200:
+                (args.out / "multi-page.png").write_bytes(client.get(r.json()["png"]).content)
+            failed |= r.status_code != 200
         else:
             failed = True
 
