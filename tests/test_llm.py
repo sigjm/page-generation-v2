@@ -2,7 +2,10 @@ import http.client
 import io
 import urllib.error
 
+import httpx
+import openai
 import pytest
+from langchain_core.messages import AIMessage
 from PIL import Image
 
 from pagegen import llm
@@ -54,22 +57,45 @@ def test_chat_json_retries_once_then_raises(monkeypatch):
         llm.chat_json([], {})
 
 
-def test_http_error_becomes_llm_error_with_body(monkeypatch):
-    def boom(*a, **k):
-        raise urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(b"PrefillDoesNotFit"))
+class FakeModel:
+    """Stands in for ChatOpenAI: records how it was configured and returns one reply."""
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", boom)
-    with pytest.raises(llm.LLMError, match="400 PrefillDoesNotFit"):
-        llm.chat([{"role": "user", "content": "x"}])
+    def __init__(self, reply, error=None):
+        self.reply, self.error, self.bound, self.structured = reply, error, None, None
+
+    def bind_tools(self, tools, **kw):
+        self.bound = (tools, kw)
+        return self
+
+    def with_structured_output(self, schema, **kw):
+        self.structured = (schema, kw)
+        return self
+
+    def invoke(self, messages):
+        self.messages = messages
+        if self.error:
+            raise self.error
+        return {"raw": self.reply, "parsed": None, "parsing_error": None} if self.structured else self.reply
 
 
-def test_connection_refused_becomes_llm_error(monkeypatch):
-    def refused(*a, **k):
-        raise urllib.error.URLError("Connection refused")
+def use(monkeypatch, model):
+    made = {}
+    monkeypatch.setattr(llm, "chat_model", lambda **kw: made.update(kw) or model)
+    return made
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", refused)
-    with pytest.raises(llm.LLMError, match="모델 서버 오류"):
-        llm.chat([])
+
+def test_chat_converts_tool_calls(monkeypatch):
+    reply = AIMessage(content="", tool_calls=[{"name": "update_text", "args": {"section_id": "s1"}, "id": "c1"}])
+    use(monkeypatch, FakeModel(reply))
+    assert llm.chat([], tools=[{"type": "function"}])["tool_calls"] == [
+        {"id": "c1", "type": "function", "function": {"name": "update_text", "arguments": '{"section_id": "s1"}'}}]
+
+
+def test_chat_keeps_invalid_tool_calls_raw(monkeypatch):
+    reply = AIMessage(content="", invalid_tool_calls=[{"name": "update_text", "args": "{section_id: s1", "id": "c2", "error": "bad"}])
+    use(monkeypatch, FakeModel(reply))
+    assert llm.chat([], tools=[{"type": "function"}])["tool_calls"] == [
+        {"id": "c2", "type": "function", "function": {"name": "update_text", "arguments": "{section_id: s1"}}]
 
 
 @pytest.mark.parametrize("content, shown", [
@@ -78,34 +104,61 @@ def test_connection_refused_becomes_llm_error(monkeypatch):
     ("<think>사용자가 원하는 건", ""),  # thinking cut off by max_tokens
 ])
 def test_chat_never_shows_reasoning(monkeypatch, content, shown):
-    monkeypatch.setattr(llm, "_post", lambda *a, **k: {"choices": [{"message": {"content": content}}]})
+    use(monkeypatch, FakeModel(AIMessage(content=content)))
     assert llm.chat([])["content"] == shown
 
 
+def test_chat_configures_the_model(monkeypatch):
+    model = FakeModel(AIMessage(content="{}"))
+    made = use(monkeypatch, model)
+    llm.chat([{"role": "user", "content": "x"}], tools=[{"type": "function"}], schema={"type": "object"},
+             thinking=True, max_tokens=99, temperature=0.3, model="local/judge")
+    assert made == {"thinking": True, "max_tokens": 99, "temperature": 0.3, "model": "local/judge"}
+    assert model.bound[1] == {"tool_choice": "auto"}
+    schema, kw = model.structured
+    assert schema["type"] == "object" and schema["title"] == "out"
+    assert kw == {"method": "json_schema", "strict": True, "include_raw": True}
+    assert model.messages == [{"role": "user", "content": "x"}]
+
+
+def test_chat_model_talks_to_mlx_serve():
+    m = llm.chat_model(thinking=False, max_tokens=10, temperature=0.0)
+    assert m.openai_api_base == f"{llm.MLX_URL}/v1" and m.model_name == llm.TEXT_MODEL and m.max_retries == 0
+    assert m.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+REQUEST = httpx.Request("POST", "http://127.0.0.1:11234/v1/chat/completions")
+
+
+@pytest.mark.parametrize("error, message", [
+    (openai.APIStatusError("bad", response=httpx.Response(400, text="PrefillDoesNotFit", request=REQUEST), body=None),
+     "모델 서버 오류: 400 PrefillDoesNotFit"),
+    (openai.APIConnectionError(request=REQUEST), "모델 서버 오류"),
+    (openai.APITimeoutError(request=REQUEST), "모델 서버 오류"),
+])
+def test_api_errors_become_llm_error(monkeypatch, error, message):
+    use(monkeypatch, FakeModel(None, error=error))
+    with pytest.raises(llm.LLMError, match=message):
+        llm.chat([])
+
+
 @pytest.mark.parametrize("error", [http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"{")])
-def test_server_dying_mid_response_becomes_llm_error(monkeypatch, error):
+def test_image_server_dying_mid_response_becomes_llm_error(monkeypatch, error):
     def boom(*a, **k):
         raise error
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", boom)
     with pytest.raises(llm.LLMError, match="모델 서버 오류"):
-        llm.chat([])
+        llm._post("/v1/images/generations", {})
 
 
-def test_chat_sends_schema_tools_and_thinking(monkeypatch):
-    sent = {}
+def test_image_http_error_keeps_the_body(monkeypatch):
+    def boom(*a, **k):
+        raise urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(b"PrefillDoesNotFit"))
 
-    def fake_post(route, body, timeout=300):
-        sent.update(body, route=route)
-        return {"choices": [{"message": {"content": "{}"}}]}
-
-    monkeypatch.setattr(llm, "_post", fake_post)
-    llm.chat([], tools=[{"type": "function"}], schema={"type": "object"}, thinking=True)
-    assert sent["route"] == "/v1/chat/completions"
-    assert sent["model"] == llm.TEXT_MODEL
-    assert sent["chat_template_kwargs"] == {"enable_thinking": True}
-    assert sent["tool_choice"] == "auto"
-    assert sent["response_format"]["json_schema"]["schema"] == {"type": "object"}
+    monkeypatch.setattr(llm.urllib.request, "urlopen", boom)
+    with pytest.raises(llm.LLMError, match="400 PrefillDoesNotFit"):
+        llm._post("/v1/images/generations", {})
 
 
 def test_edit_image_request_shape(monkeypatch, tmp_path):
