@@ -103,3 +103,9 @@ def test_numbered_points_and_overlay_hero(page):
     html = html_of(page)
     assert 'data-variant="overlay"' in html and 'class="hero-copy"' in html
     assert 'data-kind="points" data-variant="numbered"' in html
+
+
+def test_gallery_body_is_shown(page):
+    html = html_of(add(page, id="s4", kind="gallery", variant="grid-2", headline="더 많은 모습",
+                       body="여러 각도에서 본 모습", photos=["p1"]))
+    assert "<p>여러 각도에서 본 모습</p>" in html[html.index('data-kind="gallery"'):]

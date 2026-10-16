@@ -156,7 +156,9 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
     for fact in raw.get("facts") or []:
         if isinstance(fact, dict):
             key, value = str(fact.get("key") or "").strip(), str(fact.get("value") or "").strip()
-            if key and value and pg.is_sourced(value, corpus) and not pg.unsupported_numbers(f"{key}: {value}", corpus):
+            row = f"{key}: {value}"
+            if (key and value and pg.is_sourced(value, corpus) and not pg.unsupported_numbers(row, corpus)
+                    and not pg.unsupported_superlatives(row, corpus) and not pg.unsupported_hanja(row, corpus)):
                 facts.append({"key": key, "value": value})
     return {"category": str(raw.get("category") or "").strip(), "visible_features": strings("visible_features", 5),
             "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
@@ -180,8 +182,13 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
         {"kind": "points", "variant": "cards", "headline": get("points", "headline") or "이래서 좋아요",
          "body": "\n".join(f"{str(i.get('title') or '').strip()}: {str(i['text']).strip()}" for i in items)},
     ]
+    # details follow the captions the copy model was given, which skip photos whose caption failed:
+    # pair them with captioned photos only, or a failed p2 caption would put p3's copy on p2
+    captions = analysis.get("photo_captions", [])
+    captioned = [p for i, p in enumerate(uploads[1:3], 1) if i < len(captions) and captions[i]]
+    detail_of = dict(zip(captioned, details))
     for i, photo in enumerate(uploads[1:3]):
-        detail = details[i] if i < len(details) else {}
+        detail = detail_of.get(photo, {})
         sections.append({"kind": "split", "variant": pg.VARIANTS["split"][i % 2],
                          "headline": str(detail.get("headline") or "").strip(),
                          "body": str(detail.get("body") or "").strip(), "photo": photo})

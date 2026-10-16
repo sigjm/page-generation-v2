@@ -50,6 +50,7 @@ section[data-kind=gallery] .grid{display:grid;gap:12px;grid-template-columns:1fr
 section[data-variant=grid-2] .grid{grid-template-columns:1fr 1fr}
 section[data-variant=grid-3] .grid{grid-template-columns:1fr 1fr 1fr}
 section[data-kind=gallery] .grid[data-count="1"]{grid-template-columns:1fr}
+section[data-kind=gallery] p{font-size:18px;color:#555;line-height:1.6;margin:-12px 0 24px}
 section[data-variant=grid-2] img,section[data-variant=grid-3] img{aspect-ratio:1;object-fit:contain;background:#f5f5f7;border-radius:12px}
 """
 
@@ -80,7 +81,8 @@ def _section(section: dict, photos: dict[str, str], photo_url: Callable[[str], s
     elif kind == "gallery":
         images = [_img(photos, pid, photo_url) for pid in section.get("photos", [])]
         images = [image for image in images if image]
-        inner = f'<h2>{headline}</h2><div class="grid" data-count="{len(images)}">{"".join(images)}</div>'
+        caption = f"<p>{escape(body)}</p>" if body.strip() else ""
+        inner = f'<h2>{headline}</h2>{caption}<div class="grid" data-count="{len(images)}">{"".join(images)}</div>'
     elif kind == "points":
         items = "".join(
             f"<li><strong>{escape(key)}</strong><span>{escape(value)}</span></li>"

@@ -405,3 +405,17 @@ def test_draft_hanja_in_headline_falls_back_to_product_name(folder):
     page, fake = draft_n(folder, 1, copy=copy)
     assert page["sections"][0]["headline"] == "스테인리스 텀블러"
     assert "고雅的한 텀블러" not in fake.judged  # rejected mechanically, no judge call
+
+
+def test_draft_failed_caption_does_not_shift_copy_to_the_wrong_photo(folder):
+    copy = {**COPY_L, "details": [{"headline": "매끈한 무광 표면", "body": "손자국이 덜 보여요."}]}
+    page, _ = draft_n(folder, 3, captions=[LLMError("JSON 두 번 실패"), {"caption": "무광 표면 클로즈업"}], copy=copy)
+    split = next(s for s in page["sections"] if s["kind"] == "split")
+    assert (split["photo"], split["headline"]) == ("p3", "매끈한 무광 표면")
+    assert next(s for s in page["sections"] if s["kind"] == "gallery")["photos"] == ["p2"]
+
+
+def test_normalize_analysis_rejects_unsourced_hanja_and_superlative_keys():
+    raw = {"facts": [{"key": "材質", "value": "500ml"}, {"key": "최고 용량", "value": "500ml"},
+                     {"key": "용량", "value": "500ml"}]}
+    assert agent.normalize_analysis(raw, "500ml")["facts"] == [{"key": "용량", "value": "500ml"}]
