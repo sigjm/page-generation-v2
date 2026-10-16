@@ -1,3 +1,5 @@
+import json
+
 from scripts.finetune import judge_data as jd
 
 PRODUCT = {"id": "food-001", "category": "식품", "name": "감귤 주스", "notes": "제주 감귤 100%, 1L.",
@@ -88,3 +90,29 @@ def test_cap_flagged_drops_9b_flagged_rows_and_keeps_injected():
     assert {f"c{i}" for i in range(55)} <= ids and {f"x{i}-inj" for i in range(10)} <= ids
     assert len(kept) == 100  # 45 flagged of 100
     assert jd.cap_flagged(rows[:60], cap=0.45) == [r for r, _ in rows[:60]]  # already under the cap
+
+
+def test_labeling_injected_sentences_keeps_the_original_labels(tmp_path, monkeypatch):
+    from scripts.finetune import codex_teacher as ct
+
+    def put(name, rows):
+        path = tmp_path / name
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+        return path
+
+    original = {"id": "food-001-9b-t0-00", "product_id": "food-001", "text": "상큼한 감귤 주스", "source": "9b-t0"}
+    injected = {"id": "food-001-9b-t0-00-inj", "product_id": "food-001", "text": "상큼한 감귤 주스, 피로 회복에 좋습니다",
+                "source": "injected", "injected_phrase": "피로 회복에 좋습니다"}
+    monkeypatch.setattr(ct, "PRODUCTS_PATH", put("products.jsonl", [PRODUCT]))
+    monkeypatch.setattr(ct, "SENTENCES_PATH", put("sentences.jsonl", [original]))
+    monkeypatch.setattr(ct, "INJECTED_PATH", put("injected.jsonl", [injected]))
+    monkeypatch.setattr(ct, "LABELS_PATH", put("labels.jsonl", [
+        {"id": original["id"], "phrases": [{"phrase": "상큼한 감귤 주스", "type": "mood", "supported": True}]}]))
+    answer = {"items": [{"n": 1, "phrases": [{"phrase": "상큼한 감귤 주스", "type": "mood", "supported": True},
+                                             {"phrase": "피로 회복에 좋습니다", "type": "fact", "supported": False}]}]}
+    monkeypatch.setattr(ct, "call_codex", lambda command, prompt, validator, stats, key_hint="": (validator(answer), None))
+
+    ct.run_label(1)
+
+    ids = {json.loads(line)["id"] for line in ct.LABELS_PATH.read_text("utf-8").splitlines()}
+    assert ids == {original["id"], injected["id"]}

@@ -606,7 +606,8 @@ def run_label(workers: int) -> int:
     existing_rows = _load_jsonl(LABELS_PATH)
     inject_only = INJECTED_PATH.exists() and bool(existing_rows)
     sentences = injected_sentences if inject_only else original_sentences + injected_sentences
-    sentence_by_id = {row.get("id"): row for row in sentences}
+    # every sentence, not just this stage's targets: existing original labels must survive an inject-only rerun
+    sentence_by_id = {row.get("id"): row for row in original_sentences + injected_sentences}
     accepted_existing: dict[str, dict[str, Any]] = {}
     rejected_existing = Counter()
     for label in existing_rows:
