@@ -3,6 +3,9 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from . import llm as default_llm
 from . import page as pg
@@ -106,6 +109,54 @@ def _run_tool(folder: Path, page: dict, name: str, args: dict, corpus: str, basi
     raise pg.ToolError(f"오류: 없는 도구 {name}")
 
 
+class ChatState(TypedDict):
+    messages: list[dict]
+    log: list[dict]
+    changed: bool
+    reply: str | None
+    rounds: int
+
+
+def build_chat_graph(folder: Path, page: dict, corpus: str, basis: str, llm):
+    """model ⇄ tools until the model answers in text, asks the user, or uses up MAX_ROUNDS (spec §4.2)."""
+    def model(state: ChatState) -> dict:
+        message = llm.chat(state["messages"], tools=prompts.TOOLS, thinking=True, max_tokens=1024)
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return {"reply": message.get("content") or ("반영했어요." if state["changed"] else "무엇을 바꿀까요?")}
+        return {"messages": [*state["messages"], {"role": "assistant", "content": message.get("content") or "",
+                                                  "tool_calls": calls}]}
+
+    def tools(state: ChatState) -> dict:
+        messages, log, changed = list(state["messages"]), list(state["log"]), state["changed"]
+        for call in messages[-1]["tool_calls"]:
+            name, args = call.get("function", {}).get("name", ""), {}
+            try:
+                args = _args(call)
+                if name == "ask_user":
+                    log.append({"name": name, "args": args, "ok": True, "result": "질문"})
+                    return {"messages": messages, "log": log, "changed": changed,
+                            "reply": args.get("question") or "조금 더 알려 주세요."}
+                result, ok = _run_tool(folder, page, name, args, corpus, basis, llm), True
+            except pg.ToolError as e:
+                result, ok = str(e), False
+            log.append({"name": name, "args": args, "ok": ok, "result": result})
+            changed |= ok and name in MUTATING
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+        rounds = state["rounds"] + 1
+        return {"messages": messages, "log": log, "changed": changed, "rounds": rounds,
+                "reply": "여기까지 반영했어요." if rounds >= MAX_ROUNDS else None}
+
+    graph = StateGraph(ChatState)
+    graph.add_node("model", model)
+    graph.add_node("tools", tools)
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", lambda s: END if s["reply"] is not None else "tools")
+    graph.add_conditional_edges("tools", lambda s: END if s["reply"] is not None else "model")
+    # ponytail: no checkpointer; store.py already persists page/chat per turn. Add SqliteSaver if turns must resume
+    return graph.compile()
+
+
 def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default_llm) -> tuple[dict, bool]:
     """One user message (spec §4.2). Mutates page and chat; returns (assistant message, page changed).
     A text-model failure raises LLMError; the caller then leaves page.json as it was."""
@@ -114,36 +165,12 @@ def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default
     corpus = pg.corpus_of(page, chat)
     basis = basis_of(page, chat)
     messages = [{"role": "system", "content": prompts.chat_system(page)}, *history, {"role": "user", "content": text}]
-    log: list[dict] = []
-    changed, reply = False, None
-    for _ in range(MAX_ROUNDS):
-        message = llm.chat(messages, tools=prompts.TOOLS, thinking=True, max_tokens=1024)
-        calls = message.get("tool_calls") or []
-        if not calls:
-            reply = message.get("content") or ("반영했어요." if changed else "무엇을 바꿀까요?")
-            break
-        messages.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
-        for call in calls:
-            name, args = call.get("function", {}).get("name", ""), {}
-            try:
-                args = _args(call)
-                if name == "ask_user":
-                    reply = args.get("question") or "조금 더 알려 주세요."
-                    log.append({"name": name, "args": args, "ok": True, "result": "질문"})
-                    break
-                result, ok = _run_tool(folder, page, name, args, corpus, basis, llm), True
-            except pg.ToolError as e:
-                result, ok = str(e), False
-            log.append({"name": name, "args": args, "ok": ok, "result": result})
-            changed |= ok and name in MUTATING
-            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
-        if reply is not None:
-            break
-    else:
-        reply = "여기까지 반영했어요."
-    answer = {"role": "assistant", "text": reply, "tools": log}
+    graph = build_chat_graph(folder, page, corpus, basis, llm)
+    state = graph.invoke({"messages": messages, "log": [], "changed": False, "reply": None, "rounds": 0},
+                         {"recursion_limit": 4 * MAX_ROUNDS + 4})
+    answer = {"role": "assistant", "text": state["reply"], "tools": state["log"]}
     chat.append(answer)
-    return answer, changed
+    return answer, state["changed"]
 
 
 def normalize_analysis(raw: dict, corpus: str) -> dict:
