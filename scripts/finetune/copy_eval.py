@@ -4,6 +4,7 @@
     uv run python scripts/finetune/copy_eval.py drafts --split dev --copies .local/finetune/copy/teacher-dev.jsonl --out ...
     uv run python scripts/finetune/copy_eval.py pairs --new NEW.json --old OLD.json --name dev-2-1-v1
     uv run python scripts/finetune/copy_eval.py score --name dev-2-1-v1 [--min-win 0.7]
+    uv run python scripts/finetune/copy_eval.py sft --train TRAIN.json --valid DEV.json
 """
 import argparse
 import json
@@ -264,6 +265,40 @@ def cmd_score(args) -> int:
     return 0 if passed else 1
 
 
+def sft_rows(doc: dict, items: dict[str, dict]) -> list[dict]:
+    """Teacher drafts that passed every check, as mlx-vlm rows: the runtime copy messages + the teacher's JSON (spec §5.1)."""
+    if doc["system"] != prompts.COPY_SYSTEM:
+        raise ValueError("drafts were checked under another COPY_SYSTEM; make them again")
+    return [{"id": d["id"], "messages": [*messages(items[d["product_id"]]), {
+                "role": "assistant", "content": json.dumps(d["copy"], ensure_ascii=False, separators=(",", ":"))}]}
+            for d in doc["drafts"] if d["error"] is None and not d["dropped"]]
+
+
+def feedback(doc: dict) -> dict[str, list[str]]:
+    """Flagged sentences per product with a discarded draft: `codex_teacher.py copy --feedback` asks those once more."""
+    out: dict[str, list[str]] = {}
+    for d in doc["drafts"]:
+        if d["dropped"]:
+            out.setdefault(d["product_id"], []).extend(x["text"] for x in d["dropped"])
+    return out
+
+
+def cmd_sft(args) -> int:
+    items = products()
+    train_doc, valid_doc = (json.loads(path.read_text("utf-8")) for path in (args.train, args.valid))
+    train, valid = sft_rows(train_doc, items), sft_rows(valid_doc, items)
+    random.Random(0).shuffle(train)
+    (ROOT / "sft").mkdir(parents=True, exist_ok=True)
+    for name, rows in (("train", train), ("validation", valid)):
+        (ROOT / "sft" / f"{name}.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+    flagged = feedback(train_doc)
+    (ROOT / "feedback.json").write_text(json.dumps(flagged, ensure_ascii=False, indent=1), "utf-8")
+    total = len(train_doc["drafts"])
+    print(json.dumps({"train": len(train), "validation": len(valid), "teacher_drafts": total,
+                      "discarded": round(1 - len(train) / max(total, 1), 3), "feedback_products": len(flagged)}))
+    return 0
+
+
 def cmd_drafts(args) -> int:
     if args.copies:
         source = f"copies:{args.copies}"
@@ -309,8 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("score", help="판정을 열쇠로 풀고 기계 지표와 함께 합격 여부를 낸다")
     s.add_argument("--name", required=True)
     s.add_argument("--min-win", type=float, default=0.6)
+    t = sub.add_parser("sft", help="검사를 통과한 교사 초안으로 학습 행을 쓴다")
+    t.add_argument("--train", type=Path, required=True)
+    t.add_argument("--valid", type=Path, required=True)
     args = parser.parse_args(argv)
-    return {"drafts": cmd_drafts, "pairs": cmd_pairs, "score": cmd_score}[args.command](args)
+    return {"drafts": cmd_drafts, "pairs": cmd_pairs, "score": cmd_score, "sft": cmd_sft}[args.command](args)
 
 
 if __name__ == "__main__":

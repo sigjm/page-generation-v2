@@ -168,3 +168,20 @@ def test_prompts_quote_no_dev_or_test_product():
     names = [items[pid]["name"] for pid in held["dev"] + held["test"]]
     constants = [prompts.COPY_SYSTEM] + [v for v in vars(ct).values() if isinstance(v, str)]
     assert [n for n in names if any(n in c for c in constants)] == []
+
+
+def test_sft_rows_keep_only_clean_teacher_drafts_with_the_runtime_prompt():
+    from pagegen import prompts
+    items = {"food-001": PRODUCT}
+    clean = {"id": "food-001-r1", "product_id": "food-001", "copy": COPY, "error": None, "dropped": []}
+    flagged = {**clean, "id": "food-001-r2", "dropped": [{"text": "무향이에요.", "reason": "judge"}]}
+    failed = {**clean, "id": "food-001-r3", "error": "down"}
+    doc = {"split": "train", "source": "copies:x", "system": prompts.COPY_SYSTEM, "drafts": [clean, flagged, failed]}
+    rows = ce.sft_rows(doc, items)
+    assert [r["id"] for r in rows] == ["food-001-r1"]
+    assert rows[0]["messages"][:2] == ce.messages(PRODUCT)
+    answer = rows[0]["messages"][2]
+    assert answer["role"] == "assistant" and json.loads(answer["content"]) == COPY and '": "' not in answer["content"]
+    assert ce.feedback(doc) == {"food-001": ["무향이에요."]}
+    with pytest.raises(ValueError):
+        ce.sft_rows({**doc, "system": "옛 프롬프트"}, items)  # rows must teach the prompt the runtime sends
