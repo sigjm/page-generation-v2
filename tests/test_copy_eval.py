@@ -93,3 +93,63 @@ def test_metrics_measure_copying_repeats_labels_hanja_drops_and_thickness():
     assert m["duplicates"] == 0.72  # 18 of 25 sentence occurrences are shared by all three drafts
     assert m["label_headings"] == 0.25  # "주요 특징": 3 of 12 headings
     assert (m["hanja"], m["dropped"], m["thickness"]) == (1, 0.033, 8.0)
+
+
+def _doc(drafts, system="프롬프트"):
+    return {"split": "dev", "source": "model:m", "system": system, "drafts": drafts}
+
+
+def _made(pid, headline, error=None):
+    return {"id": pid, "product_id": pid, "copy": COPY, "error": error, "dropped": [], "sentences": 2, "kept": 2,
+            "seconds": 1.0, "sections": [] if error else [{"kind": "hero", "headline": headline, "body": "본문"}]}
+
+
+def test_pairs_hide_which_side_is_new_and_the_key_unmasks_it():
+    items = {f"food-00{i}": {**PRODUCT, "id": f"food-00{i}"} for i in range(1, 9)}
+    new, old = _doc([_made(pid, "새 문구") for pid in items]), _doc([_made(pid, "옛 문구") for pid in items])
+    pairs, key = ce.make_pairs(new, old, items)
+    assert {p["id"] for p in pairs} == set(items) and set(key["new_side"].values()) == {"A", "B"}
+    for p in pairs:
+        assert set(p) == {"id", "category", "basis", "A", "B"}
+        assert "새 문구" in p[key["new_side"][p["id"]]] and p["basis"].startswith("근거 텍스트: 감귤 주스")
+    assert ce.make_pairs(new, old, items) == (pairs, key)  # fixed seed
+
+
+def test_a_failed_draft_is_a_forfeit_not_a_pair():
+    items = {pid: {**PRODUCT, "id": pid} for pid in ("food-001", "food-002", "food-003")}
+    new = _doc([_made("food-001", "새"), _made("food-002", "", error="down"), _made("food-003", "", error="down")])
+    old = _doc([_made("food-001", "옛"), _made("food-002", "옛"), _made("food-003", "", error="down")])
+    pairs, key = ce.make_pairs(new, old, items)
+    assert [p["id"] for p in pairs] == ["food-001"] and key["forfeits"] == {"food-002": "new"}
+
+
+def test_score_counts_wins_ties_and_forfeits():
+    key = {"new_side": {"a": "A", "b": "B", "c": "A", "d": "B"}, "forfeits": {"e": "old", "f": "new", "g": "old"}}
+    verdicts = [{"id": "a", "winner": "A"}, {"id": "b", "winner": "A"}, {"id": "c", "winner": "tie"},
+                {"id": "d", "winner": "B"}]
+    assert ce.tally(verdicts, key) == {"wins": 4, "losses": 2, "ties": 1, "win_rate": 0.667}
+    with pytest.raises(ValueError):
+        ce.tally(verdicts[:3], key)  # every pair needs a verdict
+    with pytest.raises(ValueError):
+        ce.tally([*verdicts[:3], {"id": "d", "winner": "비슷함"}], key)
+
+
+def test_compare_allows_the_spec_tolerances_only():
+    old = {"example_copy": 0.5, "duplicates": 0.1, "label_headings": 0.2, "hanja": 3, "dropped": 0.1, "thickness": 10.0}
+    assert all(ce.compare({**old, "example_copy": 0.52, "hanja": 4, "thickness": 9.0}, old).values())
+    worse = ce.compare({**old, "duplicates": 0.13, "hanja": 5, "thickness": 8.9}, old)
+    assert [k for k, ok in worse.items() if not ok] == ["duplicates", "hanja", "thickness"]
+
+
+def test_brief_gives_the_judge_the_rubric_and_the_pairs_only(tmp_path):
+    text = ce.brief(tmp_path / "pairs.jsonl", tmp_path / "verdicts.jsonl")
+    assert ce.RUBRIC in text and str(tmp_path / "pairs.jsonl") in text and str(tmp_path / "verdicts.jsonl") in text
+    assert "key" not in text
+
+
+def test_pairs_refuse_to_reshuffle_a_named_comparison(tmp_path, monkeypatch):
+    monkeypatch.setattr(ce, "ROOT", tmp_path)
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "keys" / "gate.json").write_text("{}", "utf-8")
+    with pytest.raises(SystemExit, match="gate"):
+        ce.main(["pairs", "--new", "n.json", "--old", "o.json", "--name", "gate"])

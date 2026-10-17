@@ -2,9 +2,12 @@
 
     uv run python scripts/finetune/copy_eval.py drafts --split dev --out .local/finetune/copy/drafts/dev-base.json
     uv run python scripts/finetune/copy_eval.py drafts --split dev --copies .local/finetune/copy/teacher-dev.jsonl --out ...
+    uv run python scripts/finetune/copy_eval.py pairs --new NEW.json --old OLD.json --name dev-2-1-v1
+    uv run python scripts/finetune/copy_eval.py score --name dev-2-1-v1 [--min-win 0.7]
 """
 import argparse
 import json
+import random
 import re
 import sys
 import time
@@ -150,6 +153,117 @@ def metrics(drafts: list[dict], quoted: set[str]) -> dict:
     }
 
 
+RUBRIC = """채점 기준(위에서부터 차례로 따집니다. 앞 기준에서 차이가 분명하면 그 쪽이 이깁니다):
+1. basis에 없는 제품 사실(기능·성능·소재·성분·인증·효능·관리법·수치)을 말하는 쪽이 집니다. 분위기·장면·느낌을 꾸미는 말은 제품 사실이 아닙니다.
+2. 이 분류의 상품을 사고 싶어지게 하는가: 고객이 얻는 혜택이 분명한가, 다른 상품에도 붙일 수 있는 말이 아니라 이 상품만의 개성이 있는가.
+3. 분류에 어울리는 말투인가.
+4. 자연스러운 한국어인가: 반복, 베낀 듯한 상투구, 내용 없는 이름표 제목이 없는가.
+모든 기준에서 비슷하면 tie입니다."""
+
+
+def render(sections: list[dict]) -> str:
+    return "\n".join(f"[{s['kind']}] {s['headline']}".rstrip() + (f"\n{s['body']}" if s.get("body") else "")
+                     for s in sections)
+
+
+def make_pairs(new: dict, old: dict, items: dict[str, dict], seed: int = 0) -> tuple[list[dict], dict]:
+    """Blind A/B pairs (spec §3.4), new on a seeded random side. A draft that failed loses its product (a forfeit)."""
+    def by_product(doc: dict) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        for d in doc["drafts"]:
+            if d["product_id"] in out:
+                raise ValueError(f"{d['product_id']}: one draft per product for a blind pair")
+            out[d["product_id"]] = d
+        return out
+
+    a, b = by_product(new), by_product(old)
+    if set(a) != set(b):
+        raise ValueError("new and old drafts cover different products")
+    rng, pairs, sides, forfeits = random.Random(seed), [], {}, {}
+    for pid in sorted(a):
+        side = "A" if rng.random() < 0.5 else "B"
+        n, o = a[pid], b[pid]
+        if n["error"] or o["error"]:
+            if not (n["error"] and o["error"]):
+                forfeits[pid] = "new" if n["error"] else "old"
+            continue
+        first, second = (n, o) if side == "A" else (o, n)
+        pairs.append({"id": pid, "category": items[pid]["category"], "basis": judge_data.basis(items[pid]),
+                      "A": render(first["sections"]), "B": render(second["sections"])})
+        sides[pid] = side
+    return pairs, {"new_side": sides, "forfeits": forfeits}
+
+
+def brief(pairs_path: Path, verdicts_path: Path) -> str:
+    return f"""# 상세페이지 문구 블라인드 비교
+
+`{pairs_path}`의 각 줄은 상품 하나입니다: id, category, basis(판매자 설명과 사진에서 보이는 것), A와 B(같은 상품의 두 문구).
+줄마다 A와 B를 아래 기준으로 비교해 더 나은 쪽을 고르세요. 이 파일 말고는 아무 파일도 읽지 마세요.
+
+{RUBRIC}
+
+결과는 `{verdicts_path}`에 한 줄에 JSON 하나로 쓰세요: {{"id": "...", "winner": "A" | "B" | "tie", "reason": "한 줄 이유"}}.
+모든 id에 답하세요. 끝나면 A·B·tie 개수만 보고하세요.
+"""
+
+
+def tally(verdicts: list[dict], key: dict) -> dict:
+    sides, got = key["new_side"], {v["id"]: v["winner"] for v in verdicts}
+    if set(got) != set(sides) or not set(got.values()) <= {"A", "B", "tie"}:
+        raise ValueError("verdicts must answer every pair with A, B or tie")
+    forfeits = list(key["forfeits"].values())
+    wins = sum(w == sides[i] for i, w in got.items()) + forfeits.count("old")
+    losses = sum(w not in (sides[i], "tie") for i, w in got.items()) + forfeits.count("new")
+    ties = sum(w == "tie" for w in got.values())
+    return {"wins": wins, "losses": losses, "ties": ties,
+            "win_rate": round(wins / (wins + losses), 3) if wins + losses else 0.0}
+
+
+def compare(new_m: dict, old_m: dict) -> dict[str, bool]:
+    """Spec §3.3: each metric may get worse only by its tolerance."""
+    ok = {k: new_m[k] - old_m[k] <= tolerance + 1e-9 for k, tolerance in TOLERANCE.items()}
+    ok["thickness"] = new_m["thickness"] >= old_m["thickness"] * MIN_THICKNESS - 1e-9
+    return ok
+
+
+def cmd_pairs(args) -> int:
+    key_path = ROOT / "keys" / f"{args.name}.json"
+    if key_path.exists():  # a reshuffle after the verdicts would no longer match them
+        raise SystemExit(f"{args.name} already has pairs; pick a new --name")
+    new, old = (json.loads(path.read_text("utf-8")) for path in (args.new, args.old))
+    pairs, key = make_pairs(new, old, products())
+    blind = (ROOT / "blind" / args.name).resolve()
+    blind.mkdir(parents=True, exist_ok=True)
+    (blind / "pairs.jsonl").write_text("".join(json.dumps(p, ensure_ascii=False) + "\n" for p in pairs), "utf-8")
+    (blind / "brief.md").write_text(brief(blind / "pairs.jsonl", blind / "verdicts.jsonl"), "utf-8")
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(json.dumps({"new": str(args.new), "old": str(args.old), **key}, ensure_ascii=False, indent=1), "utf-8")
+    print(f"{len(pairs)} pairs, {len(key['forfeits'])} forfeits → {blind / 'brief.md'}")
+    return 0
+
+
+def cmd_score(args) -> int:
+    key = json.loads((ROOT / "keys" / f"{args.name}.json").read_text("utf-8"))
+    new, old = (json.loads(Path(key[side]).read_text("utf-8")) for side in ("new", "old"))
+    lines = (ROOT / "blind" / args.name / "verdicts.jsonl").read_text("utf-8").splitlines()
+    blind = tally([json.loads(line) for line in lines if line.strip()], key)
+    quoted = example_units(new["system"]) | example_units(old["system"])
+    m_new, m_old = metrics(new["drafts"], quoted), metrics(old["drafts"], quoted)
+    ok = compare(m_new, m_old)
+    passed = blind["win_rate"] >= args.min_win and all(ok.values())
+    print(f"blind: new {blind['wins']} / old {blind['losses']} / tie {blind['ties']} → win {blind['win_rate']} (≥ {args.min_win})")
+    print("| metric | old | new | ok |\n|---|---|---|---|")
+    for k in [*TOLERANCE, "thickness"]:
+        print(f"| {k} | {m_old[k]} | {m_new[k]} | {'OK' if ok[k] else 'WORSE'} |")
+    print(f"| failed | {m_old['failed']} | {m_new['failed']} | |")
+    print(f"| seconds | {m_old['seconds']} | {m_new['seconds']} | ×{round(m_new['seconds'] / max(m_old['seconds'], 0.01), 2)} |")
+    print("PASS" if passed else "FAIL")
+    (ROOT / "keys" / f"{args.name}-score.json").write_text(json.dumps(
+        {"blind": blind, "new": m_new, "old": m_old, "ok": ok, "passed": passed, "min_win": args.min_win},
+        ensure_ascii=False, indent=1), "utf-8")
+    return 0 if passed else 1
+
+
 def cmd_drafts(args) -> int:
     if args.copies:
         source = f"copies:{args.copies}"
@@ -188,8 +302,15 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--model", default=llm.COPY_MODEL)
     d.add_argument("--copies", type=Path, help="교사 초안 JSONL. 주면 모델을 부르지 않고 검사만 한다")
     d.add_argument("--workers", type=int, default=2)
+    p = sub.add_parser("pairs", help="블라인드 A/B 짝과 판정 지시문을 쓴다")
+    p.add_argument("--new", type=Path, required=True)
+    p.add_argument("--old", type=Path, required=True)
+    p.add_argument("--name", required=True)
+    s = sub.add_parser("score", help="판정을 열쇠로 풀고 기계 지표와 함께 합격 여부를 낸다")
+    s.add_argument("--name", required=True)
+    s.add_argument("--min-win", type=float, default=0.6)
     args = parser.parse_args(argv)
-    return {"drafts": cmd_drafts}[args.command](args)
+    return {"drafts": cmd_drafts, "pairs": cmd_pairs, "score": cmd_score}[args.command](args)
 
 
 if __name__ == "__main__":
