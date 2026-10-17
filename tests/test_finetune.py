@@ -154,3 +154,47 @@ def test_label_run_also_labels_original_sentences_without_a_label(tmp_path, monk
 
     ids = {json.loads(line)["id"] for line in ct.LABELS_PATH.read_text("utf-8").splitlines()}
     assert ids == {labeled["id"], unlabeled["id"]}
+
+
+def test_teacher_rules_quote_no_eval_or_regression_sentence():
+    from pathlib import Path
+    from scripts import eval_tools
+    from scripts.finetune import codex_teacher as ct
+    # quoting an eval sentence in the teacher prompt makes the eval measure the prompt, not the model (r2 report)
+    texts = [text for text, _, _ in eval_tools.JUDGE_CASES]
+    for name in ("eval.jsonl", "test.jsonl"):  # git-ignored, present where the labels are made
+        path = Path(".local/finetune/judge") / name
+        if path.exists():
+            texts += [json.loads(line)["text"] for line in path.read_text("utf-8").splitlines() if line.strip()]
+    assert [t for t in texts if t.strip() in ct.LABEL_RULES] == []
+
+
+def test_label_keeps_the_good_items_of_a_chunk_with_one_bad_item(tmp_path, monkeypatch):
+    from scripts.finetune import codex_teacher as ct
+
+    def put(name, rows):
+        path = tmp_path / name
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
+        return path
+
+    good = {"id": "food-001-9b-t0-00", "product_id": "food-001", "text": "상큼한 감귤 주스", "source": "9b-t0"}
+    bad = {"id": "food-001-9b-t0-01", "product_id": "food-001", "text": "제주 감귤 100%", "source": "9b-t0"}
+    monkeypatch.setattr(ct, "PRODUCTS_PATH", put("products.jsonl", [PRODUCT]))
+    monkeypatch.setattr(ct, "SENTENCES_PATH", put("sentences.jsonl", [good, bad]))
+    monkeypatch.setattr(ct, "INJECTED_PATH", put("injected.jsonl", []))
+    monkeypatch.setattr(ct, "LABELS_PATH", put("labels.jsonl", []))
+    answer = {"items": [{"n": 1, "phrases": [{"phrase": "상큼한 감귤 주스", "type": "mood", "supported": True}]},
+                        {"n": 2, "phrases": [{"phrase": "한라봉", "type": "fact", "supported": False}]}]}
+    monkeypatch.setattr(ct, "call_codex", lambda command, prompt, validator, stats, key_hint="": (validator(answer), None))
+
+    ct.run_label(1)
+
+    ids = {json.loads(line)["id"] for line in ct.LABELS_PATH.read_text("utf-8").splitlines()}
+    assert ids == {good["id"]}  # the bad one is left unlabeled for the next run
+
+
+def test_held_out_splits_dev_and_test_products_per_category():
+    products = {f"{c}-{i:03d}": {"category": c} for c in ("food", "living") for i in range(1, 16)}
+    dev, test = jd.held_out(products)
+    assert dev == {f"{c}-{i:03d}" for c in ("food", "living") for i in range(1, 7)}
+    assert test == {f"{c}-{i:03d}" for c in ("food", "living") for i in range(7, 13)}

@@ -53,6 +53,22 @@ MAX_RETRIES = 2
 CODEX_TIMEOUT_SECONDS = 600
 
 
+# r3 teacher rules. Examples are made up: an eval, test or eval_tools sentence quoted here would let the
+# eval measure this prompt instead of the model (test_teacher_rules_quote_no_eval_or_regression_sentence).
+LABEL_RULES = """정답 매기기 규칙(교사용). 이 규칙은 위 지시문의 "애매하면 false"보다 먼저 적용한다.
+- 문장마다 짧은 구절로 나누고 모든 구절을 빠짐없이 분류한다. phrase는 문장에 있는 글자 그대로 옮긴다(바꿔 쓰지 않는다).
+- 근거 텍스트에 있는 판매자 주장은 근거로 본다.
+- 분위기·감정·장면·추천·주관적 꾸밈말은 mood(supported=true)다.
+- 쓰는 때·장소·상황(어디서나, 언제든, 아침마다, 여행길에)과 편리함·부담 없음을 꾸미는 말(간편하게, 편하게, 손쉽게, 부담 없이)은 mood다. 단 제품 특성을 단정하는 편리함은 fact다. 예) "씻기 쉬운 구조", "조립이 필요 없는". 근거에 없는 기능이 있어야 가능한 상황도 fact다. 예) 근거에 방수가 없는데 "비에 젖어도 괜찮아요"는 fact/false.
+- 촉감·그립감·착용감이라도 소재·구조·기능 없이 느낌만 꾸미면 mood다. 예) "포근하게 감싸는", "보드랍게 닿는", "편안하게 입는". 소재·구조·기능을 단정하면 fact다. 예) "극세사 안감", "미끄럼 방지 고무", "늘어나는 원단".
+- 사진에 보이는 특징을 주관적으로 묘사한 말은 mood다. 예) "은은한 광택", "단정한 실루엣", "입체감이 도드라지는".
+- 근거에 있는 사실을 다른 말로 바꿔 말한 구절은 supported=true다. 예) 근거 "어깨끈 길이 조절" → "끈 길이를 맞춰 멜 수 있어요", 근거 "4인용" → "네 식구가 쓰기 알맞은".
+- 근거에 있는 특징이 하는 일을 그대로 말한 구절은 supported=true다. 예) 근거 "자석 여닫이" → "뚜껑이 착 붙어 닫혀요", 근거 "접이식 다리" → "다리를 접어 틈새에 세워 둘 수 있어요". 다른 성능은 별도다(보온 근거로 보냉을, 방수 근거로 세탁기 사용을 말하면 false).
+- 그 특징 덕분에 생활이 바뀌거나 문제가 풀린다고 단정하는 효과는 fact다. 근거에 그 효과가 없으면 false다. 예) "걱정을 덜어 줘요", "정리가 달라져요", "실수가 사라져요".
+- 근거보다 강하게 말하면 supported=false다. 예) 근거 "얼룩을 덜 남기는" → "얼룩이 전혀 남지 않아요", 근거 "가벼운" → "무게가 느껴지지 않아요".
+- 근거의 수치를 주관적으로 요약한 꾸밈말은 mood다. 예) 근거 "폭 90cm" → "여유 있는 폭으로".
+- 제품 사실이 없는 제목·안내 문구는 mood다. 예) "이렇게 써 보세요", "구성 한눈에 보기", "세탁 전에 읽어 주세요"."""
+
 class BatchValidationError(ValueError):
     def __init__(self, message: str, discarded: int = 0):
         super().__init__(message)
@@ -630,17 +646,7 @@ def run_label(workers: int) -> int:
             numbered = "\n".join(f"{index}. {row['text']}" for index, row in enumerate(chunk, 1))
             prompt = f"""{prompts.JUDGE_SYSTEM}
 
-정답 매기기 규칙(교사용):
-- 문장마다 짧은 구절로 나누고 모든 구절을 빠짐없이 분류한다. phrase는 문장에 있는 글자 그대로 옮긴다(바꿔 쓰지 않는다).
-- 분위기·감정·장면·추천·주관적 꾸밈말은 mood(supported=true).
-- 제품의 기능·성능·소재·크기·인증·호환·사용 가능 여부·사용/관리 지시·제조 방식·품질·내구성을 단정하면 fact. 근거 텍스트나 사진에서 보이는 것에 같은 뜻이 있으면 supported=true, 없거나 추측이 필요하면 false. 애매하면 false.
-- 근거 텍스트에 있는 판매자 주장은 근거로 본다.
-- 내용 없는 제목·안내 문구("사용 전 확인해주세요", "보관 방법", "관리 및 주의 사항")는 제품 사실을 주장하지 않으므로 mood다.
-- 근거에 있는 사실을 다른 말로 바꿔 말한 구절은 supported=true다. 예) 근거 "한 손에 쥐기 좋은 크기" → "한 손으로 잡기 편해요", 근거 "2인분" → "두 사람이 먹기 좋은 양".
-- 근거의 수치를 주관적으로 요약한 꾸밈말은 mood다. 예) 근거 "높이 120cm" → "넉넉한 높이로".
-- "간편하게", "편하게", "손쉽게" 같은 편리함 부사는 꾸밈말(mood)이다. 단 "세척이 편해요", "손이 덜 가는"처럼 제품 특성을 단정하면 fact다.
-- 입었을 때의 편안함·착용감·핏은 촉감처럼 제품 특성이므로 fact다.
-- 근거보다 강하게 말하면 supported=false다. 예) 근거 "냄새를 줄여 주는" → "냄새가 전혀 나지 않아요".
+{LABEL_RULES}
 
 {_basis_for_product(product)}
 문장:
@@ -670,9 +676,12 @@ def run_label(workers: int) -> int:
                 missing = len(by_n) - len(seen)
                 if missing:
                     rejected["응답에서 문장 누락"] += missing
-                if rejected:
-                    reason = ", ".join(f"{key}:{count}" for key, count in sorted(rejected.items()))
+                reason = ", ".join(f"{key}:{count}" for key, count in sorted(rejected.items()))
+                if not output:
                     raise BatchValidationError(f"기계 검사 탈락({reason})", sum(rejected.values()))
+                # keep the items that pass; the rest stay unlabeled and the next `label` run asks again
+                for key, count in rejected.items():
+                    stats.discard(count, key)
                 return output
 
             tasks.append((product_id, offset // 20, prompt, validator))
