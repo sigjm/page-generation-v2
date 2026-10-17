@@ -18,7 +18,7 @@ pagegen.enable_dev_tracing("pagegen-finetune")  # synthetic data only (langchain
 from pagegen.page import is_sourced  # noqa: E402
 
 ROOT = Path(".local/finetune/judge")
-HELD_CATEGORY_COUNT = 6  # products per category kept out of training for the eval set
+HELD_CATEGORY_COUNT = 6  # products per category kept out of training, for the dev set and again for the test set
 MAX_FLAGGED = 0.45  # spec §3.2: 35-50% of training sentences carry an unsupported claim
 
 
@@ -75,6 +75,16 @@ def validate_label(text: str, label: dict, injected: str | None = None) -> dict 
 
 def flagged(label: dict) -> bool:
     return any(p["type"] != "mood" and p["supported"] is not True for p in label["phrases"])
+
+
+def held_out(products: dict[str, dict]) -> tuple[set[str], set[str]]:
+    """Dev (reviewed eval.jsonl) and test product ids: the first and the next HELD_CATEGORY_COUNT per category."""
+    by_category: dict[str, list[str]] = {}
+    for pid, p in sorted(products.items()):
+        by_category.setdefault(p["category"], []).append(pid)
+    n = HELD_CATEGORY_COUNT
+    return ({pid for ids in by_category.values() for pid in ids[:n]},
+            {pid for ids in by_category.values() for pid in ids[n:2 * n]})
 
 
 def split(product_ids: list[str], held_per) -> tuple[list[str], list[str], list[str]]:
@@ -143,11 +153,8 @@ def cmd_build() -> int:
     products = {p["id"]: p for p in read("products.jsonl")}
     sentences = {r["id"]: r for r in read("sentences.jsonl") + read("injected.jsonl")}
     labels = {r["id"]: r for r in read("labels.jsonl")}
-    by_category: dict[str, list[str]] = {}
-    for pid, p in sorted(products.items()):
-        by_category.setdefault(p["category"], []).append(pid)
-    held_ids = {pid for ids in by_category.values() for pid in ids[:HELD_CATEGORY_COUNT]}
-    held, train, valid = split(sorted(products), held_per=lambda pid: pid in held_ids)
+    dev_ids, test_ids = held_out(products)
+    held, train, valid = split(sorted(products), held_per=lambda pid: pid in dev_ids | test_ids)
     rows: dict[str, list[dict]] = {"train": [], "valid": [], "held": []}
     is_flagged: dict[str, bool] = {}
     dropped = 0
@@ -168,10 +175,11 @@ def cmd_build() -> int:
     random.Random(0).shuffle(rows["train"])
     write("sft/train.jsonl", rows["train"])
     write("sft/validation.jsonl", rows["valid"])
-    held_flagged = [r for r in rows["held"] if r["flagged"]]
-    held_clean = [r for r in rows["held"] if not r["flagged"]]
-    rng = random.Random(0)
-    write("eval_candidates.jsonl", rng.sample(held_flagged, min(75, len(held_flagged))) + rng.sample(held_clean, min(75, len(held_clean))))
+    for name, ids in (("eval_candidates.jsonl", dev_ids), ("test_candidates.jsonl", test_ids)):
+        held_flagged = [r for r in rows["held"] if r["product_id"] in ids and r["flagged"]]
+        held_clean = [r for r in rows["held"] if r["product_id"] in ids and not r["flagged"]]
+        rng = random.Random(0)
+        write(name, rng.sample(held_flagged, min(75, len(held_flagged))) + rng.sample(held_clean, min(75, len(held_clean))))
     train_flagged = sum(is_flagged[r["id"]] for r in rows["train"])
     print(json.dumps({"train": len(rows["train"]), "validation": len(rows["valid"]), "held": len(rows["held"]),
                       "dropped": dropped, "capped": before - len(rows["train"]), "train_flagged_ratio": round(train_flagged / max(1, len(rows["train"])), 3)}))
