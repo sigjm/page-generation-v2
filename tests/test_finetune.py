@@ -240,6 +240,8 @@ def test_copy_asks_every_product_of_the_split_n_times_and_resumes(tmp_path, monk
     assert asked == {}  # resumed: nothing asked twice
     rows = [json.loads(line) for line in (tmp_path / "teacher-dev.jsonl").read_text("utf-8").splitlines()]
     assert len(rows) == 12 and rows[0]["copy"] == TEACHER_COPY and rows[0]["teacher"] == "codex"
+    from scripts.finetune import copy_eval as ce
+    assert rows[0]["system"] == ce.system_hash()  # which COPY_SYSTEM the teacher was shown
 
 
 def test_copy_feedback_asks_only_the_flagged_products_once_more(tmp_path, monkeypatch):

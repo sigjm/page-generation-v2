@@ -366,7 +366,9 @@ def build_draft_graph(folder: Path, llm):
         split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(page["photos"]) - 1))
                        if i + 1 < len(captions) and captions[i + 1]]
         hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
-        copy = llm.chat_json(copy_messages(s["seller"], page["analysis"], hint), prompts.COPY_SCHEMA, model=llm.COPY_MODEL)
+        # the copy model only ever saw the no-captions hint (phase 2-2); with captions it miscounts details
+        model = None if split_lines else llm.COPY_MODEL
+        copy = llm.chat_json(copy_messages(s["seller"], page["analysis"], hint), prompts.COPY_SCHEMA, model=model)
         return {"copy": copy}
 
     def assemble(s: DraftState) -> dict:

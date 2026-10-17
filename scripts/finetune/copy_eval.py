@@ -7,6 +7,7 @@
     uv run python scripts/finetune/copy_eval.py sft --train TRAIN.json --valid DEV.json
 """
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -55,6 +56,11 @@ def splits(products: dict[str, dict]) -> dict[str, list[str]]:
         out["test"] += ids[12:18]
         out["train"] += ids[6:12] + ids[18:]
     return out
+
+
+def system_hash() -> str:
+    """Which COPY_SYSTEM a teacher draft was made under: rows from another prompt must not become SFT rows."""
+    return hashlib.sha256(prompts.COPY_SYSTEM.encode("utf-8")).hexdigest()[:12]
 
 
 def inputs(product: dict) -> tuple[str, dict, str]:
@@ -311,6 +317,9 @@ def cmd_drafts(args) -> int:
     ids = set(splits(items)[args.split])
     if args.copies:
         rows = [json.loads(line) for line in args.copies.read_text("utf-8").splitlines() if line.strip()]
+        stale = [r["id"] for r in rows if r.get("system") != system_hash()]
+        if stale:
+            raise SystemExit(f"teacher copies made under another COPY_SYSTEM: {', '.join(stale[:5])}")
         todo = [(r["id"], r["product_id"], lambda p, c=r["copy"]: c) for r in rows if r["product_id"] in ids]
     else:
         todo = [(pid, pid, lambda p: llm.chat_json(messages(p), prompts.COPY_SCHEMA, model=args.model))

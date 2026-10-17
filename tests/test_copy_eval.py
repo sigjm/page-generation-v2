@@ -79,6 +79,14 @@ def test_drafts_refuse_a_model_the_server_does_not_list(monkeypatch, tmp_path):
         ce.main(["drafts", "--split", "dev", "--model", "local/new", "--out", str(tmp_path / "d.json")])
 
 
+def test_drafts_refuse_teacher_copies_made_under_another_prompt(tmp_path):
+    # checked under today's COPY_SYSTEM, they would become SFT rows teaching a prompt the runtime never sent
+    copies = tmp_path / "teacher-dev.jsonl"
+    copies.write_text(json.dumps({"id": "food-001-r1", "product_id": "food-001", "copy": {}, "system": "old"}) + "\n", "utf-8")
+    with pytest.raises(SystemExit, match="food-001-r1"):
+        ce.main(["drafts", "--split", "dev", "--copies", str(copies), "--out", str(tmp_path / "d.json")])
+
+
 def test_metrics_measure_copying_repeats_labels_hanja_drops_and_thickness():
     quoted = ce.example_units('예) "햇살 드는 식탁 위", "주요 특징"')
     assert quoted == {"햇살 드는", "드는 식탁", "식탁 위", "주요 특징"}

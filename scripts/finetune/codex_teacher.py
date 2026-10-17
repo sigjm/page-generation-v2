@@ -663,7 +663,7 @@ def run_copy(workers: int, split: str, rounds: int, feedback_path: Path | None) 
         if result is None:
             print(f"[copy] {draft_id}: 건너뜀 — {error}", flush=True)
             return None
-        return {"id": draft_id, "product_id": pid, "copy": result, "teacher": "codex"}
+        return {"id": draft_id, "product_id": pid, "copy": result, "teacher": "codex", "system": copy_eval.system_hash()}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         rows = [row for row in pool.map(execute, tasks) if row]

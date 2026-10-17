@@ -450,6 +450,12 @@ def test_draft_copy_uses_the_copy_model(folder):
     assert "model" not in fake.json_kw[0] and fake.json_kw[1]["model"] == "copy-model"  # analysis, then copy
 
 
+def test_draft_with_photo_captions_keeps_the_text_model_for_copy(folder):
+    # the copy model was trained and tested only on the no-captions hint; it miscounts details otherwise
+    _, fake = draft_n(folder, 3)
+    assert fake.json_kw[3].get("model") is None  # analysis, two captions, then copy on the default TEXT_MODEL
+
+
 def test_check_sections_reports_dropped_sentences_with_reasons():
     sections = [{"kind": "hero", "headline": "최고의 텀블러", "body": "이중 진공 단열. 12시간 보냉."},
                 {"kind": "notice", "headline": "안내", "body": "습기에 주의하세요."}]
