@@ -459,3 +459,18 @@ def test_check_sections_reports_dropped_sentences_with_reasons():
     assert tally["dropped"] == [{"text": "최고의 텀블러", "reason": "superlative"},
                                 {"text": "12시간 보냉.", "reason": "number"},
                                 {"text": "습기에 주의하세요.", "reason": "judge"}]
+
+
+def test_scene_copy_repeating_the_photo_instruction_is_dropped():
+    copy = {**COPY, "scene": {"headline": "바닷가 캠핑장의 아침", "photo_instruction": "바닷가 캠핑장의 아침",
+                              "body": "바닷가 캠핑장의 아침. 따뜻한 커피 한 잔과 함께."}}
+    sections, instruction = agent.build_sections(copy, ANALYSIS, "스테인리스 텀블러",
+                                                 [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}])
+    scene = next(s for s in sections if s["kind"] == "scene")
+    assert (scene["headline"], scene["body"], instruction) == ("", "따뜻한 커피 한 잔과 함께.", "바닷가 캠핑장의 아침")
+
+
+def test_copy_prompt_has_category_tones_and_no_scene_example():
+    from pagegen import prompts
+    assert "아침 햇살" not in prompts.COPY_SYSTEM and "한글로만" in prompts.COPY_SYSTEM
+    assert all(f"{c}:" in prompts.COPY_SYSTEM for c in ("식품", "화장품", "가전·전자", "의류·잡화", "생활·주방"))

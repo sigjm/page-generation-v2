@@ -153,3 +153,18 @@ def test_pairs_refuse_to_reshuffle_a_named_comparison(tmp_path, monkeypatch):
     (tmp_path / "keys" / "gate.json").write_text("{}", "utf-8")
     with pytest.raises(SystemExit, match="gate"):
         ce.main(["pairs", "--new", "n.json", "--old", "o.json", "--name", "gate"])
+
+
+def test_prompts_quote_no_dev_or_test_product():
+    from pathlib import Path
+
+    from pagegen import prompts
+    from scripts.finetune import codex_teacher as ct
+    path = Path(".local/finetune/judge/products.jsonl")
+    if not path.exists():
+        pytest.skip("products.jsonl lives only where the data is made")
+    items = {p["id"]: p for p in map(json.loads, path.read_text("utf-8").splitlines())}
+    held = ce.splits(items)
+    names = [items[pid]["name"] for pid in held["dev"] + held["test"]]
+    constants = [prompts.COPY_SYSTEM] + [v for v in vars(ct).values() if isinstance(v, str)]
+    assert [n for n in names if any(n in c for c in constants)] == []
