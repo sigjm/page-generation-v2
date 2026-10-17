@@ -474,3 +474,10 @@ def test_copy_prompt_has_category_tones_and_no_scene_example():
     from pagegen import prompts
     assert "아침 햇살" not in prompts.COPY_SYSTEM and "한글로만" in prompts.COPY_SYSTEM
     assert all(f"{c}:" in prompts.COPY_SYSTEM for c in ("식품", "화장품", "가전·전자", "의류·잡화", "생활·주방"))
+
+
+def test_name_tag_headings_are_dropped_from_banner_scene_and_split():
+    copy = {**COPY, "banner": {"headline": "주요 특징"}, "scene": {"headline": "이래서 좋아요", "body": "", "photo_instruction": "x"}}
+    sections, _ = agent.build_sections(copy, ANALYSIS, "스테인리스 텀블러",
+                                       [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}])
+    assert [s["headline"] for s in sections if s["kind"] in ("banner", "scene")] == ["", ""]

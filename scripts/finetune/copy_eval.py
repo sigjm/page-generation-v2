@@ -23,11 +23,7 @@ from scripts.finetune import eval_judge, judge_data  # noqa: E402  (judge_data t
 ROOT = Path(".local/finetune/copy")
 NO_DETAILS = "사진 설명 없음: details는 빈 목록."
 PHOTOS = [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}]  # one photo: no splits, no details, no gallery
-# Name-tag headings (spec §3.3), from the baseline drafts; the notice's own headings are allowed and not counted
-LABEL_HEADINGS = ("주요 특징", "제품 특징", "이래서 좋아요", "이런 점이 좋아요", "이런 점이 좋습니다", "이런 점이 특별해요",
-                  "이런 점이 특별합니다", "사용 방법", "사용 전 확인하세요", "사용 전 꼭 확인하세요", "사용 전 확인해 주세요",
-                  "구매 전 확인하세요", "구매 전 확인해 주세요", "관리 방법", "보관 방법", "세탁 방법", "관리 및 주의 사항",
-                  "관리와 주의 사항", "관리 및 주의", "관리 및 보관 방법")
+LABEL_HEADINGS = agent.LABEL_HEADINGS  # name-tag headings (spec §3.3); the runtime drops them too
 TOLERANCE = {"example_copy": 0.02, "duplicates": 0.02, "label_headings": 0.02, "hanja": 1, "dropped": 0.02}
 MIN_THICKNESS = 0.9  # the new drafts keep at least 90% of the old sentence count
 
