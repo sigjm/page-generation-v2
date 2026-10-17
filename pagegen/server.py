@@ -1,5 +1,6 @@
 """FastAPI app (spec §7): upload → draft, chat, undo, preview HTML, files, export."""
 import copy
+import os
 import threading
 from pathlib import Path
 
@@ -8,8 +9,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+import pagegen
+
 from . import agent, render, store
 from .llm import LLMError
+
+# Real product notes and copy never leave the Mac unless the user opts in (spec 2026-10-16-langchain-adoption §4).
+if os.environ.get("PAGEGEN_TRACE") == "1":
+    pagegen.enable_dev_tracing("pagegen-app")
+else:
+    # langsmith honours all four names (V2 first); one left "true" would send real product data, and the legacy
+    # LANGCHAIN_TRACING alone would make every call fail with "LangChainTracerV1 is no longer supported"
+    for name in ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING"):
+        os.environ[name] = "false"
 
 app = FastAPI(title="pagegen")
 STATIC = Path(__file__).resolve().parent.parent / "static"

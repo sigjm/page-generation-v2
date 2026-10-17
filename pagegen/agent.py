@@ -3,6 +3,9 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
+
+from langgraph.graph import END, START, StateGraph
 
 from . import llm as default_llm
 from . import page as pg
@@ -21,13 +24,16 @@ def basis_of(page: dict, chat: list[dict]) -> str:
     return f"근거 텍스트: {pg.corpus_of(page, chat)}\n사진에서 보이는 것: {', '.join(seen) or '(없음)'}"
 
 
+def judge_messages(text: str, basis: str) -> list[dict]:
+    """The exact judge prompt; the fine-tuning data (scripts/finetune) is built with this same function."""
+    return [{"role": "system", "content": prompts.JUDGE_SYSTEM}, {"role": "user", "content": f"{basis}\n새 문구: {text}"}]
+
+
 def judge(llm, text: str, basis: str) -> list[str]:
     """Phrases of `text` asserting product facts missing from `basis` (spec §5). Raises LLMError: fail-closed."""
     if not text.strip():
         return []
-    data = llm.chat_json([{"role": "system", "content": prompts.JUDGE_SYSTEM},
-                          {"role": "user", "content": f"{basis}\n새 문구: {text}"}],
-                         prompts.JUDGE_SCHEMA, max_tokens=800)
+    data = llm.chat_json(judge_messages(text, basis), prompts.JUDGE_SCHEMA, max_tokens=800, model=llm.JUDGE_MODEL)
     return [str(p.get("phrase") or text) for p in data.get("phrases", [])
             if p.get("type") != "mood" and p.get("supported") is not True]
 
@@ -106,6 +112,54 @@ def _run_tool(folder: Path, page: dict, name: str, args: dict, corpus: str, basi
     raise pg.ToolError(f"오류: 없는 도구 {name}")
 
 
+class ChatState(TypedDict):
+    messages: list[dict]
+    log: list[dict]
+    changed: bool
+    reply: str | None
+    rounds: int
+
+
+def build_chat_graph(folder: Path, page: dict, corpus: str, basis: str, llm):
+    """model ⇄ tools until the model answers in text, asks the user, or uses up MAX_ROUNDS (spec §4.2)."""
+    def model(state: ChatState) -> dict:
+        message = llm.chat(state["messages"], tools=prompts.TOOLS, thinking=True, max_tokens=1024)
+        calls = message.get("tool_calls") or []
+        if not calls:
+            return {"reply": message.get("content") or ("반영했어요." if state["changed"] else "무엇을 바꿀까요?")}
+        return {"messages": [*state["messages"], {"role": "assistant", "content": message.get("content") or "",
+                                                  "tool_calls": calls}]}
+
+    def tools(state: ChatState) -> dict:
+        messages, log, changed = list(state["messages"]), list(state["log"]), state["changed"]
+        for call in messages[-1]["tool_calls"]:
+            name, args = call.get("function", {}).get("name", ""), {}
+            try:
+                args = _args(call)
+                if name == "ask_user":
+                    log.append({"name": name, "args": args, "ok": True, "result": "질문"})
+                    return {"messages": messages, "log": log, "changed": changed,
+                            "reply": args.get("question") or "조금 더 알려 주세요."}
+                result, ok = _run_tool(folder, page, name, args, corpus, basis, llm), True
+            except pg.ToolError as e:
+                result, ok = str(e), False
+            log.append({"name": name, "args": args, "ok": ok, "result": result})
+            changed |= ok and name in MUTATING
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
+        rounds = state["rounds"] + 1
+        return {"messages": messages, "log": log, "changed": changed, "rounds": rounds,
+                "reply": "여기까지 반영했어요." if rounds >= MAX_ROUNDS else None}
+
+    graph = StateGraph(ChatState)
+    graph.add_node("model", model)
+    graph.add_node("tools", tools)
+    graph.add_edge(START, "model")
+    graph.add_conditional_edges("model", lambda s: END if s["reply"] is not None else "tools")
+    graph.add_conditional_edges("tools", lambda s: END if s["reply"] is not None else "model")
+    # ponytail: no checkpointer; store.py already persists page/chat per turn. Add SqliteSaver if turns must resume
+    return graph.compile()
+
+
 def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default_llm) -> tuple[dict, bool]:
     """One user message (spec §4.2). Mutates page and chat; returns (assistant message, page changed).
     A text-model failure raises LLMError; the caller then leaves page.json as it was."""
@@ -114,36 +168,12 @@ def chat_turn(folder: Path, page: dict, chat: list[dict], text: str, llm=default
     corpus = pg.corpus_of(page, chat)
     basis = basis_of(page, chat)
     messages = [{"role": "system", "content": prompts.chat_system(page)}, *history, {"role": "user", "content": text}]
-    log: list[dict] = []
-    changed, reply = False, None
-    for _ in range(MAX_ROUNDS):
-        message = llm.chat(messages, tools=prompts.TOOLS, thinking=True, max_tokens=1024)
-        calls = message.get("tool_calls") or []
-        if not calls:
-            reply = message.get("content") or ("반영했어요." if changed else "무엇을 바꿀까요?")
-            break
-        messages.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
-        for call in calls:
-            name, args = call.get("function", {}).get("name", ""), {}
-            try:
-                args = _args(call)
-                if name == "ask_user":
-                    reply = args.get("question") or "조금 더 알려 주세요."
-                    log.append({"name": name, "args": args, "ok": True, "result": "질문"})
-                    break
-                result, ok = _run_tool(folder, page, name, args, corpus, basis, llm), True
-            except pg.ToolError as e:
-                result, ok = str(e), False
-            log.append({"name": name, "args": args, "ok": ok, "result": result})
-            changed |= ok and name in MUTATING
-            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": result})
-        if reply is not None:
-            break
-    else:
-        reply = "여기까지 반영했어요."
-    answer = {"role": "assistant", "text": reply, "tools": log}
+    graph = build_chat_graph(folder, page, corpus, basis, llm)
+    state = graph.invoke({"messages": messages, "log": [], "changed": False, "reply": None, "rounds": 0},
+                         {"recursion_limit": 4 * MAX_ROUNDS + 4})
+    answer = {"role": "assistant", "text": state["reply"], "tools": state["log"]}
     chat.append(answer)
-    return answer, changed
+    return answer, state["changed"]
 
 
 def normalize_analysis(raw: dict, corpus: str) -> dict:
@@ -272,43 +302,91 @@ def _caption(folder: Path, photo: dict, llm) -> str:
     return str(data.get("caption") or "").strip()
 
 
+DRAFT_STEPS = ("analyze", "caption", "write_copy", "assemble", "check", "edit_scene", "first_message")
+
+
+class DraftState(TypedDict, total=False):
+    page: dict
+    corpus: str
+    seller: str
+    copy: dict
+    sections: list[dict]
+    instruction: str
+    message: dict
+
+
+def build_draft_graph(folder: Path, llm):
+    """The fixed-order first draft (spec §4.1) as a LangGraph pipeline; each node is a step make_draft used to run inline."""
+    def analyze(s: DraftState) -> dict:
+        page = s["page"]
+        images = [llm.image_part(llm.model_jpeg(folder / p["file"])) for p in page["photos"][:4]]
+        raw = llm.chat_json([{"role": "system", "content": prompts.ANALYZE_SYSTEM},
+                             {"role": "user", "content": [*images, {"type": "text", "text": s["seller"]}]}],
+                            prompts.ANALYZE_SCHEMA)
+        page["analysis"] = normalize_analysis(raw, s["corpus"])
+        return {"page": page}
+
+    def caption(s: DraftState) -> dict:
+        page = s["page"]
+        # captions[i] belongs to photos[i]; p1 is covered by the analysis
+        page["analysis"]["photo_captions"] = ["", *(_caption(folder, p, llm) for p in page["photos"][1:3])]
+        return {"page": page}
+
+    def write_copy(s: DraftState) -> dict:
+        page = s["page"]
+        captions = page["analysis"]["photo_captions"]
+        split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(page["photos"]) - 1))
+                       if i + 1 < len(captions) and captions[i + 1]]
+        hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
+        copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
+                              {"role": "user", "content": f"{s['seller']}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{hint}"}],
+                             prompts.COPY_SCHEMA)
+        return {"copy": copy}
+
+    def assemble(s: DraftState) -> dict:
+        page = s["page"]
+        sections, instruction = build_sections(s["copy"], page["analysis"], page["product"]["name"], page["photos"])
+        return {"sections": _settle(sections), "instruction": instruction}
+
+    def check(s: DraftState) -> dict:
+        page, sections = s["page"], s["sections"]
+        basis, tally = basis_of(page, []), {"judged": 0, "failed": 0}
+        for section in sections:
+            if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
+                _clean(section, s["corpus"], basis, page["product"]["name"], llm, tally)
+        if tally["judged"] and tally["failed"] == tally["judged"]:
+            raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
+        page["sections"] = [{"id": f"s{i}", **sec} for i, sec in enumerate(_settle(sections), 1)]
+        return {"page": page}
+
+    def edit_scene(s: DraftState) -> dict:
+        page = s["page"]
+        scene = next((sec for sec in page["sections"] if sec["kind"] == "scene"), None)
+        if scene:
+            try:
+                edit_photo(folder, page, scene["id"], s["instruction"], llm)
+            except pg.ToolError:
+                pass  # keep the original photo (spec §4.1-5)
+        return {"page": page}
+
+    def first_message(s: DraftState) -> dict:
+        questions = s["page"]["analysis"]["questions"]
+        text = "초안을 만들었어요. 오른쪽 미리보기를 보고 고칠 점을 말씀해 주세요."
+        if questions:
+            text += "\n더 채우려면 알려 주세요:\n" + "\n".join(f"- {q}" for q in questions)
+        return {"message": {"role": "assistant", "text": text, "tools": []}}
+
+    graph = StateGraph(DraftState)
+    for name, step in zip(DRAFT_STEPS, (analyze, caption, write_copy, assemble, check, edit_scene, first_message)):
+        graph.add_node(name, step)
+    for a, b in zip((START, *DRAFT_STEPS), (*DRAFT_STEPS, END)):
+        graph.add_edge(a, b)
+    return graph.compile()
+
+
 def make_draft(folder: Path, pid: str, product: dict, photos: list[dict], llm=default_llm) -> tuple[dict, dict]:
     """Spec §4.1. Returns (page, first assistant message). Raises LLMError and then no draft exists."""
     page = {"id": pid, "version": 1, "product": product, "analysis": {}, "photos": photos, "sections": []}
-    corpus = pg.corpus_of(page, [])
     seller = f"상품명: {product['name']}\n판매자 설명: {product['notes'] or '(없음)'}"
-    images = [llm.image_part(llm.model_jpeg(folder / p["file"])) for p in photos[:4]]
-    raw = llm.chat_json([{"role": "system", "content": prompts.ANALYZE_SYSTEM},
-                         {"role": "user", "content": [*images, {"type": "text", "text": seller}]}],
-                        prompts.ANALYZE_SCHEMA)
-    page["analysis"] = normalize_analysis(raw, corpus)
-    captions = [""]  # p1 is covered by the analysis; captions[i] belongs to photos[i]
-    for photo in photos[1:3]:
-        captions.append(_caption(folder, photo, llm))
-    page["analysis"]["photo_captions"] = captions
-    split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(photos) - 1))
-                   if i + 1 < len(captions) and captions[i + 1]]
-    detail_hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
-    copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
-                          {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{detail_hint}"}],
-                         prompts.COPY_SCHEMA)
-    sections, instruction = build_sections(copy, page["analysis"], product["name"], photos)
-    sections = _settle(sections)
-    basis = basis_of(page, [])
-    tally = {"judged": 0, "failed": 0}
-    for section in sections:
-        if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
-            _clean(section, corpus, basis, product["name"], llm, tally)
-    if tally["judged"] and tally["failed"] == tally["judged"]:
-        raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
-    page["sections"] = [{"id": f"s{i}", **s} for i, s in enumerate(_settle(sections), 1)]
-    scene = next((s for s in page["sections"] if s["kind"] == "scene"), None)
-    if scene:
-        try:
-            edit_photo(folder, page, scene["id"], instruction, llm)
-        except pg.ToolError:
-            pass  # keep the original photo (spec §4.1-5)
-    text = "초안을 만들었어요. 오른쪽 미리보기를 보고 고칠 점을 말씀해 주세요."
-    if page["analysis"]["questions"]:
-        text += "\n더 채우려면 알려 주세요:\n" + "\n".join(f"- {q}" for q in page["analysis"]["questions"])
-    return page, {"role": "assistant", "text": text, "tools": []}
+    state = build_draft_graph(folder, llm).invoke({"page": page, "corpus": pg.corpus_of(page, []), "seller": seller})
+    return state["page"], state["message"]

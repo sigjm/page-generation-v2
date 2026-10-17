@@ -19,10 +19,11 @@ def flag(phrase):
 
 class FakeLLM:
     """Scripted stand-in for pagegen.llm: pops one reply per call, raises replies that are exceptions."""
+    JUDGE_MODEL = "judge-model"
 
     def __init__(self, chats=(), jsons=(), edit=b"\x89PNG fake"):
         self.chats, self.jsons, self.edit = list(chats), list(jsons), edit
-        self.chat_calls, self.json_calls = [], []
+        self.chat_calls, self.json_calls, self.json_kw = [], [], []
 
     def chat(self, messages, **kw):
         self.chat_calls.append(json.loads(json.dumps(messages)))
@@ -30,6 +31,7 @@ class FakeLLM:
 
     def chat_json(self, messages, schema, **kw):
         self.json_calls.append(messages)
+        self.json_kw.append(kw)
         reply = self.jsons.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -419,3 +421,16 @@ def test_normalize_analysis_rejects_unsourced_hanja_and_superlative_keys():
     raw = {"facts": [{"key": "材質", "value": "500ml"}, {"key": "최고 용량", "value": "500ml"},
                      {"key": "용량", "value": "500ml"}]}
     assert agent.normalize_analysis(raw, "500ml")["facts"] == [{"key": "용량", "value": "500ml"}]
+
+
+def test_judge_calls_use_the_judge_model(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("update_text", section_id="s1", field="headline", text="온종일 따뜻")]},
+                          {"content": "줄였어요."}], jsons=[OK])
+    agent.chat_turn(folder, page, [], "헤드라인 짧게", fake)
+    assert fake.json_kw[0]["model"] == "judge-model"
+
+
+def test_judge_messages_match_the_runtime_prompt():
+    from pagegen import prompts
+    assert agent.judge_messages("문장", "근거") == [{"role": "system", "content": prompts.JUDGE_SYSTEM},
+                                                  {"role": "user", "content": "근거\n새 문구: 문장"}]

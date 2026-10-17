@@ -1,4 +1,5 @@
-"""MLX Serve client (spec §2, §6): chat with tools / vision / json_schema, and Qwen-Image edit. stdlib HTTP."""
+"""MLX Serve client (spec §2, §6). Chat, tools, vision and json_schema go through LangChain's ChatOpenAI;
+the Qwen-Image edit uses non-standard OpenAI fields, so it keeps a plain stdlib HTTP call."""
 import base64
 import http.client
 import io
@@ -10,12 +11,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import openai
+from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI
 from PIL import Image, ImageOps
 
 MLX_URL = os.environ.get("MLX_URL", "http://127.0.0.1:11234")
 TEXT_MODEL = os.environ.get("TEXT_MODEL", "empero-ai/Qwen3.8-9B-Distill-MLX-4bit")
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "ddalcu/Qwen-Image-2.1-MLX-Serve-4bit")
 IMAGE_STEPS = int(os.environ.get("IMAGE_STEPS", "20"))
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", TEXT_MODEL)  # the claim judge can run on its own fine-tuned model
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 log = logging.getLogger("pagegen")
 
@@ -36,26 +41,69 @@ def _post(route: str, body: dict, timeout: float = 300) -> dict:
         raise LLMError(f"모델 서버 오류: {e}") from e
 
 
+def chat_model(*, thinking: bool = False, max_tokens: int = 1024, temperature: float = 0.0,
+               model: str | None = None) -> ChatOpenAI:
+    return ChatOpenAI(base_url=f"{MLX_URL}/v1", api_key="local", model=model or TEXT_MODEL, temperature=temperature,
+                      max_tokens=max_tokens, timeout=300, max_retries=0,
+                      extra_body={"chat_template_kwargs": {"enable_thinking": thinking}})
+
+
+def _openai_calls(message) -> list[dict]:
+    """AIMessage tool calls back in OpenAI form. Calls whose arguments were not valid JSON keep their raw text,
+    so the agent can hand the model its "인자 JSON" error instead of losing the call."""
+    calls = [{"id": c.get("id") or "", "type": "function",
+              "function": {"name": c["name"], "arguments": json.dumps(c["args"], ensure_ascii=False)}}
+             for c in message.tool_calls]
+    calls += [{"id": c.get("id") or "", "type": "function",
+               "function": {"name": c.get("name") or "", "arguments": c.get("args") or ""}}
+              for c in message.invalid_tool_calls]
+    return calls
+
+
+def _lc_message(message: dict):
+    """An assistant turn with tool calls as an AIMessage. LangChain json.loads every arguments string in a dict
+    history, so a call the model sent with broken JSON goes in as an invalid tool call, raw text and all."""
+    if message.get("role") != "assistant" or not message.get("tool_calls"):
+        return message
+    valid, invalid = [], []
+    for call in message["tool_calls"]:
+        function = call.get("function") or {}
+        raw = function.get("arguments") or ""
+        try:
+            args = raw if isinstance(raw, dict) else json.loads(raw)
+        except ValueError:
+            args = None
+        if isinstance(args, dict):
+            valid.append({"name": function.get("name") or "", "args": args, "id": call.get("id") or ""})
+        else:
+            invalid.append({"name": function.get("name") or "", "args": raw if isinstance(raw, str) else json.dumps(raw),
+                            "id": call.get("id") or "", "error": None})
+    return AIMessage(content=message.get("content") or "", tool_calls=valid, invalid_tool_calls=invalid)
+
+
 def chat(messages: list[dict], *, tools: list[dict] | None = None, schema: dict | None = None,
-         thinking: bool = False, max_tokens: int = 1024, temperature: float = 0.0) -> dict:
-    body = {"model": TEXT_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
-            "chat_template_kwargs": {"enable_thinking": thinking}}
+         thinking: bool = False, max_tokens: int = 1024, temperature: float = 0.0, model: str | None = None) -> dict:
+    """One chat completion. Returns {"content", "tool_calls"} with OpenAI-form tool calls (arguments as JSON text)."""
+    runnable = chat_model(thinking=thinking, max_tokens=max_tokens, temperature=temperature, model=model)
     if tools:
-        body |= {"tools": tools, "tool_choice": "auto"}
+        runnable = runnable.bind_tools(tools, tool_choice="auto")
     if schema:
-        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "out", "strict": True, "schema": schema}}
+        runnable = runnable.with_structured_output({"title": "out", **schema}, method="json_schema", strict=True,
+                                                   include_raw=True)
     try:
-        message = _post("/v1/chat/completions", body)["choices"][0]["message"]
-    except (KeyError, IndexError, TypeError) as e:
-        raise LLMError(f"모델 응답 형식 오류: {e}") from e
-    content = message.get("content")
-    if content:
-        if "</think>" in content:
-            content = content.rpartition("</think>")[2]
-        elif content.lstrip().startswith("<think>"):
-            content = ""  # thinking cut off by max_tokens: there is no answer, and the reasoning is never shown
-        message["content"] = content.strip()
-    return message
+        reply = runnable.invoke([_lc_message(m) for m in messages])
+    except openai.APIStatusError as e:
+        raise LLMError(f"모델 서버 오류: {e.status_code} {e.response.text[:200]}") from e
+    except Exception as e:  # noqa: BLE001 — any malformed reply (200 with an error body, no choices…) is a model failure
+        raise LLMError(f"모델 서버 오류: {e}") from e
+    if isinstance(reply, dict):  # structured output: chat_json parses the raw text itself (fences, retries)
+        reply = reply["raw"]
+    content = reply.content if isinstance(reply.content, str) else ""
+    if "</think>" in content:
+        content = content.rpartition("</think>")[2]
+    elif content.lstrip().startswith("<think>"):
+        content = ""  # thinking cut off by max_tokens: there is no answer, and the reasoning is never shown
+    return {"content": content.strip(), "tool_calls": _openai_calls(reply)}
 
 
 def parse_json(text: str | None) -> dict:
@@ -65,13 +113,13 @@ def parse_json(text: str | None) -> dict:
     return data
 
 
-def chat_json(messages: list[dict], schema: dict, *, max_tokens: int = 1500) -> dict:
+def chat_json(messages: list[dict], schema: dict, *, max_tokens: int = 1500, model: str | None = None) -> dict:
     """json_schema call, thinking off; one retry at temperature 0.3 (spec §4.1, §5)."""
     error: Exception | None = None
     for temperature in (0.0, 0.3):
         content = None
         try:
-            content = chat(messages, schema=schema, max_tokens=max_tokens, temperature=temperature).get("content")
+            content = chat(messages, schema=schema, max_tokens=max_tokens, temperature=temperature, model=model).get("content")
             return parse_json(content)
         except (LLMError, ValueError) as e:
             log.warning("JSON retry: %s | tail=%r", e, (content or "")[-160:])
