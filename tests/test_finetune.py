@@ -198,3 +198,70 @@ def test_held_out_splits_dev_and_test_products_per_category():
     dev, test = jd.held_out(products)
     assert dev == {f"{c}-{i:03d}" for c in ("food", "living") for i in range(1, 7)}
     assert test == {f"{c}-{i:03d}" for c in ("food", "living") for i in range(7, 13)}
+
+
+TEACHER_COPY = {"hero": {"headline": "상큼한 아침", "body": ""}, "banner": {"headline": ""},
+                "points": {"headline": "", "items": [{"title": "t", "text": "x"}] * 3},
+                "scene": {"headline": "", "body": "", "photo_instruction": "식탁 위"},
+                "notice": {"headline": "", "body": ""}, "details": []}
+
+
+def _copy_setup(tmp_path, monkeypatch, asked):
+    from scripts.finetune import codex_teacher as ct
+    path = tmp_path / "products.jsonl"
+    path.write_text("".join(json.dumps({**PRODUCT, "id": f"food-{i:03d}"}, ensure_ascii=False) + "\n"
+                            for i in range(1, 20)), "utf-8")
+    monkeypatch.setattr(ct, "PRODUCTS_PATH", path)
+    monkeypatch.setattr(ct, "COPY_DIR", tmp_path)
+
+    def fake(command, prompt, validator, stats, key_hint=""):
+        asked[key_hint] = prompt
+        return validator(TEACHER_COPY), None
+    monkeypatch.setattr(ct, "call_codex", fake)
+    return ct
+
+
+def test_copy_prompt_is_the_runtime_copy_prompt_plus_one_line():
+    from pagegen import prompts
+    from scripts.finetune import codex_teacher as ct, copy_eval as ce
+    system, user = ce.messages(PRODUCT)
+    assert ct.copy_prompt(PRODUCT) == f"{system['content']}\n\n{user['content']}\n\n{ct.COPY_SUFFIX}"
+    assert ct.copy_prompt(PRODUCT, ["무향이에요."]).endswith(f"{ct.COPY_FEEDBACK}\n- 무향이에요.")
+    assert ct.schema_documents()["copy"] == prompts.COPY_SCHEMA
+
+
+def test_copy_asks_every_product_of_the_split_n_times_and_resumes(tmp_path, monkeypatch):
+    asked = {}
+    ct = _copy_setup(tmp_path, monkeypatch, asked)
+    assert ct.run_copy(1, "dev", 2, None) == 0
+    assert sorted(asked) == sorted(f"food-{i:03d}-r{n}" for i in range(1, 7) for n in (1, 2))
+    asked.clear()
+    ct.run_copy(1, "dev", 2, None)
+    assert asked == {}  # resumed: nothing asked twice
+    rows = [json.loads(line) for line in (tmp_path / "teacher-dev.jsonl").read_text("utf-8").splitlines()]
+    assert len(rows) == 12 and rows[0]["copy"] == TEACHER_COPY and rows[0]["teacher"] == "codex"
+
+
+def test_copy_feedback_asks_only_the_flagged_products_once_more(tmp_path, monkeypatch):
+    asked = {}
+    ct = _copy_setup(tmp_path, monkeypatch, asked)
+    (tmp_path / "feedback.json").write_text(json.dumps({"food-007": ["무향이에요."]}, ensure_ascii=False), "utf-8")
+    ct.run_copy(1, "train", 2, tmp_path / "feedback.json")
+    assert list(asked) == ["food-007-retry"] and "- 무향이에요." in asked["food-007-retry"]
+
+
+def test_copy_rejects_a_draft_without_three_points_or_with_details():
+    import pytest
+    from scripts.finetune import codex_teacher as ct
+    with pytest.raises(ct.BatchValidationError):
+        ct.validate_copy({**TEACHER_COPY, "points": {"headline": "", "items": [{"title": "t", "text": "x"}] * 2}})
+    with pytest.raises(ct.BatchValidationError):
+        ct.validate_copy({**TEACHER_COPY, "details": [{"headline": "h", "body": "b"}]})
+    assert ct.validate_copy(TEACHER_COPY) == TEACHER_COPY
+
+
+def test_copy_never_asks_for_test_products():
+    import pytest
+    from scripts.finetune import codex_teacher as ct
+    with pytest.raises(SystemExit):
+        ct.main(["copy", "--split", "test"])

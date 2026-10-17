@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 from pagegen.agent import basis_of  # noqa: E402
 from pagegen import prompts  # noqa: E402
+from scripts.finetune import copy_eval  # noqa: E402
 
 
 DATA_DIR = ROOT / ".local/finetune/judge"
@@ -68,6 +69,12 @@ LABEL_RULES = """정답 매기기 규칙(교사용). 이 규칙은 위 지시문
 - 근거보다 강하게 말하면 supported=false다. 예) 근거 "얼룩을 덜 남기는" → "얼룩이 전혀 남지 않아요", 근거 "가벼운" → "무게가 느껴지지 않아요".
 - 근거의 수치를 주관적으로 요약한 꾸밈말은 mood다. 예) 근거 "폭 90cm" → "여유 있는 폭으로".
 - 제품 사실이 없는 제목·안내 문구는 mood다. 예) "이렇게 써 보세요", "구성 한눈에 보기", "세탁 전에 읽어 주세요"."""
+
+COPY_DIR = ROOT / ".local/finetune/copy"
+# The copy teacher sees the runtime copy prompt plus these lines. Dev and test product names never go in a
+# teacher constant (tests/test_copy_eval.py::test_prompts_quote_no_dev_or_test_product).
+COPY_SUFFIX = "JSON 하나로만 답한다."
+COPY_FEEDBACK = "이전 초안에서 아래 문장이 근거 없음으로 걸렸습니다. 이런 내용은 쓰지 않습니다:"
 
 class BatchValidationError(ValueError):
     def __init__(self, message: str, discarded: int = 0):
@@ -148,6 +155,7 @@ def schema_documents() -> dict[str, dict[str, Any]]:
             "type": "object", "additionalProperties": False, "required": ["items"],
             "properties": {"items": {"type": "array", "items": label_item}},
         },
+        "copy": prompts.COPY_SCHEMA,
     }
 
 
@@ -614,6 +622,57 @@ def run_inject(workers: int, per_product: int) -> int:
     return 0 if stats.failures == 0 else 1
 
 
+def copy_prompt(product: dict[str, Any], flagged: list[str] | tuple[str, ...] = ()) -> str:
+    system, user = copy_eval.messages(product)
+    prompt = f"{system['content']}\n\n{user['content']}\n\n{COPY_SUFFIX}"
+    if flagged:
+        prompt += f"\n\n{COPY_FEEDBACK}\n" + "\n".join(f"- {text}" for text in flagged)
+    return prompt
+
+
+def validate_copy(payload: dict[str, Any]) -> dict[str, Any]:
+    points = payload.get("points")
+    items = points.get("items") if isinstance(points, dict) else None
+    if not isinstance(items, list) or len(items) != 3:
+        raise BatchValidationError("points.items는 3개여야 함")
+    if payload.get("details"):
+        raise BatchValidationError("사진 설명이 없으므로 details는 빈 목록이어야 함")
+    hero = payload.get("hero")
+    if not isinstance(hero, dict) or not str(hero.get("headline") or "").strip():
+        raise BatchValidationError("hero.headline이 비어 있음")
+    return payload
+
+
+def run_copy(workers: int, split: str, rounds: int, feedback_path: Path | None) -> int:
+    products = {row["id"]: row for row in _load_jsonl(PRODUCTS_PATH)}
+    ids = copy_eval.splits(products)[split]
+    out_path = COPY_DIR / f"teacher-{split}.jsonl"
+    existing = _load_jsonl(out_path)
+    done = {row["id"] for row in existing}
+    if feedback_path:
+        feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
+        tasks = [(f"{pid}-retry", pid, feedback[pid]) for pid in ids if pid in feedback]
+    else:
+        tasks = [(f"{pid}-r{n}", pid, []) for pid in ids for n in range(1, rounds + 1)]
+    tasks = [task for task in tasks if task[0] not in done]
+    stats = RunStats()
+
+    def execute(task: tuple[str, str, list[str]]) -> dict[str, Any] | None:
+        draft_id, pid, flagged = task
+        result, error = call_codex("copy", copy_prompt(products[pid], flagged), validate_copy, stats, draft_id)
+        if result is None:
+            print(f"[copy] {draft_id}: 건너뜀 — {error}", flush=True)
+            return None
+        return {"id": draft_id, "product_id": pid, "copy": result, "teacher": "codex"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        rows = [row for row in pool.map(execute, tasks) if row]
+    _write_jsonl(out_path, existing + rows)
+    print(f"copy: 신규 {len(rows)}개, 기존 {len(existing)}개, 대상 {len(tasks)}개, 호출 {stats.calls}, "
+          f"실패 {stats.failures}, 재시도 {stats.retries}, 캐시 재사용 {stats.cache_hits}, 경과 {stats.elapsed}s", flush=True)
+    return 0 if stats.failures == 0 else 1
+
+
 def run_label(workers: int) -> int:
     products = {row["id"]: row for row in _load_jsonl(PRODUCTS_PATH)}
     original_sentences = _load_jsonl(SENTENCES_PATH)
@@ -716,12 +775,17 @@ def main(argv: list[str] | None = None) -> int:
         ("products", "가상 상품 300개 생성"),
         ("inject", "근거 있는 9B 문장에 근거 없는 사실을 끼운 변형 생성"),
         ("label", "문장별 주장 정답 생성"),
+        ("copy", "문구 교사 초안 생성"),
     ):
         sub = subparsers.add_parser(name, help=help_text)
         sub.add_argument("--workers", type=int, default=4, help="동시 Codex 호출 수 (기본: 4)")
         if name == "inject":
             sub.add_argument("--per-product", type=int, choices=(2, 3, 4), default=2,
                              help="상품별 총 주입 문장 수 (기본: 2)")
+        if name == "copy":
+            sub.add_argument("--split", choices=("train", "dev"), required=True)
+            sub.add_argument("--rounds", type=int, default=2, help="상품마다 따로 묻는 횟수 (기본: 2)")
+            sub.add_argument("--feedback", type=Path, help="걸린 문장 JSON: 그 상품만 한 번 더 묻는다")
     args = parser.parse_args(argv)
     if args.workers < 1:
         parser.error("--workers는 1 이상이어야 합니다")
@@ -730,6 +794,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_products(args.workers)
     if args.command == "inject":
         return run_inject(args.workers, args.per_product)
+    if args.command == "copy":
+        return run_copy(args.workers, args.split, args.rounds, args.feedback)
     return run_label(args.workers)
 
 
