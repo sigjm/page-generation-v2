@@ -208,3 +208,7 @@ def test_history_with_broken_tool_arguments_reaches_the_server(monkeypatch):
     assert llm.chat(history, tools=prompts.TOOLS)["content"] == "다시 할게요."
     call = sent["body"]["messages"][1]["tool_calls"][0]
     assert call["function"] == {"name": "update_text", "arguments": "{section_id: s1"}
+
+
+def test_copy_model_defaults_to_text_model():
+    assert llm.COPY_MODEL == llm.TEXT_MODEL  # COPY_MODEL is not set in tests

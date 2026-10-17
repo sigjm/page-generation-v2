@@ -29,6 +29,12 @@ def judge_messages(text: str, basis: str) -> list[dict]:
     return [{"role": "system", "content": prompts.JUDGE_SYSTEM}, {"role": "user", "content": f"{basis}\n새 문구: {text}"}]
 
 
+def copy_messages(seller: str, analysis: dict, hint: str) -> list[dict]:
+    """The exact first-draft copy prompt; scripts/finetune (eval drafts, teacher, SFT rows) builds it with this same function."""
+    return [{"role": "system", "content": prompts.COPY_SYSTEM},
+            {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(analysis, ensure_ascii=False)}\n{hint}"}]
+
+
 def judge(llm, text: str, basis: str) -> list[str]:
     """Phrases of `text` asserting product facts missing from `basis` (spec §5). Raises LLMError: fail-closed."""
     if not text.strip():
@@ -236,19 +242,29 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
 
 def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) -> None:
     """Spec §4.1-6 for one model-written section: drop sentences, or replace the headline, failing either check.
-    A sentence the judge cannot answer (the 9B sometimes loops until max_tokens) is dropped, not fatal."""
-    def passes(text: str) -> bool:
-        if (pg.unsupported_numbers(text, corpus) or pg.unsupported_superlatives(text, corpus)
-                or pg.unsupported_hanja(text, corpus)):
-            return False
+    A sentence the judge cannot answer (the 9B sometimes loops until max_tokens) is dropped, not fatal.
+    Every dropped text goes to tally["dropped"] with its reason (the phase 2 copy eval reads them)."""
+    def reason(text: str) -> str:
+        if pg.unsupported_numbers(text, corpus):
+            return "number"
+        if pg.unsupported_superlatives(text, corpus):
+            return "superlative"
+        if pg.unsupported_hanja(text, corpus):
+            return "hanja"
         if not text.strip():
-            return True
+            return ""
         tally["judged"] += 1
         try:
-            return not judge(llm, text, basis)
+            return "judge" if judge(llm, text, basis) else ""
         except LLMError:
             tally["failed"] += 1
-            return False  # unjudged text never reaches the page
+            return "judge_error"  # unjudged text never reaches the page
+
+    def passes(text: str) -> bool:
+        why = reason(text)
+        if why:
+            tally["dropped"].append({"text": text, "reason": why})
+        return not why
 
     if not passes(section["headline"]):
         section["headline"] = "" if section["kind"] in ("banner", "split") else name  # don't repeat the hero title
@@ -261,6 +277,18 @@ def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) 
         if kept:
             lines.append(" ".join(kept))
     section["body"] = "\n".join(lines)
+
+
+def check_sections(sections: list[dict], corpus: str, basis: str, name: str, llm) -> tuple[list[dict], dict]:
+    """Spec §4.1-6 over a whole draft, in place: (settled sections, tally of judged/failed/dropped).
+    Raises LLMError when no judge call succeeded. scripts/finetune/copy_eval.py checks drafts with this same function."""
+    tally = {"judged": 0, "failed": 0, "dropped": []}
+    for section in sections:
+        if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
+            _clean(section, corpus, basis, name, llm, tally)
+    if tally["judged"] and tally["failed"] == tally["judged"]:
+        raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
+    return _settle(sections), tally
 
 
 def _has_content(section: dict) -> bool:
@@ -338,9 +366,7 @@ def build_draft_graph(folder: Path, llm):
         split_lines = [f"사진 {i + 2}: {captions[i + 1]}" for i in range(min(2, len(page["photos"]) - 1))
                        if i + 1 < len(captions) and captions[i + 1]]
         hint = ("details를 쓸 사진 설명:\n" + "\n".join(split_lines)) if split_lines else "사진 설명 없음: details는 빈 목록."
-        copy = llm.chat_json([{"role": "system", "content": prompts.COPY_SYSTEM},
-                              {"role": "user", "content": f"{s['seller']}\n사진 분석: {json.dumps(page['analysis'], ensure_ascii=False)}\n{hint}"}],
-                             prompts.COPY_SCHEMA)
+        copy = llm.chat_json(copy_messages(s["seller"], page["analysis"], hint), prompts.COPY_SCHEMA, model=llm.COPY_MODEL)
         return {"copy": copy}
 
     def assemble(s: DraftState) -> dict:
@@ -349,14 +375,9 @@ def build_draft_graph(folder: Path, llm):
         return {"sections": _settle(sections), "instruction": instruction}
 
     def check(s: DraftState) -> dict:
-        page, sections = s["page"], s["sections"]
-        basis, tally = basis_of(page, []), {"judged": 0, "failed": 0}
-        for section in sections:
-            if section["kind"] not in ("spec_table", "gallery"):  # facts are spec-checked; the gallery title is fixed
-                _clean(section, s["corpus"], basis, page["product"]["name"], llm, tally)
-        if tally["judged"] and tally["failed"] == tally["judged"]:
-            raise LLMError("주장 검사를 하지 못해 초안을 만들지 않았습니다. 모델 서버 상태를 확인해 주세요.")
-        page["sections"] = [{"id": f"s{i}", **sec} for i, sec in enumerate(_settle(sections), 1)]
+        page = s["page"]
+        sections, _ = check_sections(s["sections"], s["corpus"], basis_of(page, []), page["product"]["name"], llm)
+        page["sections"] = [{"id": f"s{i}", **sec} for i, sec in enumerate(sections, 1)]
         return {"page": page}
 
     def edit_scene(s: DraftState) -> dict:

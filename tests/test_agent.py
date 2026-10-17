@@ -20,6 +20,7 @@ def flag(phrase):
 class FakeLLM:
     """Scripted stand-in for pagegen.llm: pops one reply per call, raises replies that are exceptions."""
     JUDGE_MODEL = "judge-model"
+    COPY_MODEL = "copy-model"
 
     def __init__(self, chats=(), jsons=(), edit=b"\x89PNG fake"):
         self.chats, self.jsons, self.edit = list(chats), list(jsons), edit
@@ -434,3 +435,27 @@ def test_judge_messages_match_the_runtime_prompt():
     from pagegen import prompts
     assert agent.judge_messages("문장", "근거") == [{"role": "system", "content": prompts.JUDGE_SYSTEM},
                                                   {"role": "user", "content": "근거\n새 문구: 문장"}]
+
+
+def test_copy_messages_match_the_runtime_prompt():
+    from pagegen import prompts
+    analysis = {"category": "식품", "facts": []}
+    assert agent.copy_messages("상품명: 감귤", analysis, "사진 설명 없음: details는 빈 목록.") == [
+        {"role": "system", "content": prompts.COPY_SYSTEM},
+        {"role": "user", "content": '상품명: 감귤\n사진 분석: {"category": "식품", "facts": []}\n사진 설명 없음: details는 빈 목록.'}]
+
+
+def test_draft_copy_uses_the_copy_model(folder):
+    _, _, fake = draft(folder)
+    assert "model" not in fake.json_kw[0] and fake.json_kw[1]["model"] == "copy-model"  # analysis, then copy
+
+
+def test_check_sections_reports_dropped_sentences_with_reasons():
+    sections = [{"kind": "hero", "headline": "최고의 텀블러", "body": "이중 진공 단열. 12시간 보냉."},
+                {"kind": "notice", "headline": "안내", "body": "습기에 주의하세요."}]
+    fake = JudgeByContent([], bad=["습기"])
+    kept, tally = agent.check_sections(sections, "스테인리스 텀블러\n이중 진공 단열", "근거", "스테인리스 텀블러", fake)
+    assert kept == [{"kind": "hero", "headline": "스테인리스 텀블러", "body": "이중 진공 단열."}]  # empty notice settled away
+    assert tally["dropped"] == [{"text": "최고의 텀블러", "reason": "superlative"},
+                                {"text": "12시간 보냉.", "reason": "number"},
+                                {"text": "습기에 주의하세요.", "reason": "judge"}]
