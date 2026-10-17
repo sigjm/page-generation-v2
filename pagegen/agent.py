@@ -16,11 +16,6 @@ MAX_ROUNDS = 4
 HISTORY = 12  # the last 6 turns, user + assistant
 MUTATING = {"update_text", "edit_photo", "use_photo", "add_section", "remove_section", "move_section", "set_variant"}
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-# Name-tag headings (phase 2 spec §3.3), from the baseline drafts; the notice's own headings are allowed
-LABEL_HEADINGS = ("주요 특징", "제품 특징", "이래서 좋아요", "이런 점이 좋아요", "이런 점이 좋습니다", "이런 점이 특별해요",
-                  "이런 점이 특별합니다", "사용 방법", "사용 전 확인하세요", "사용 전 꼭 확인하세요", "사용 전 확인해 주세요",
-                  "구매 전 확인하세요", "구매 전 확인해 주세요", "관리 방법", "보관 방법", "세탁 방법", "관리 및 주의 사항",
-                  "관리와 주의 사항", "관리 및 주의", "관리 및 보관 방법")
 
 
 def basis_of(page: dict, chat: list[dict]) -> str:
@@ -205,21 +200,6 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
             "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
 
 
-def _not_a_label(text: str) -> str:
-    """Empty for a name-tag heading ("주요 특징"): banner, scene and split may stay empty (phase 2 spec §4)."""
-    return "" if re.sub(r"\s+", "", text).rstrip(".!?") in {re.sub(r"\s+", "", h) for h in LABEL_HEADINGS} else text
-
-
-def _unless(text: str, instruction: str) -> str:
-    """`text` without the sentences that only repeat the scene photo instruction: the 9B pasted the
-    instruction into the scene copy (phase 2 spec §4)."""
-    same = instruction.strip().rstrip(".!? ")
-    if not same:
-        return text
-    lines = (" ".join(s for s in _sentences(line) if s.rstrip(".!? ") != same) for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
-
-
 def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) -> tuple[list[dict], str]:
     """Spec §4 (layouts): p1 → hero/scene, p2·p3 → split, p4… → gallery. Returns (sections without ids, scene instruction)."""
     def get(block: str, key: str) -> str:
@@ -234,7 +214,7 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
         {"kind": "hero", "variant": "below", "headline": get("hero", "headline") or name, "body": get("hero", "body"),
          "photo": uploads[0]},
         {"kind": "banner", "variant": "light", "body": "",
-         "headline": _not_a_label("" if get("banner", "headline") == (get("hero", "headline") or name) else get("banner", "headline"))},
+         "headline": "" if get("banner", "headline") == (get("hero", "headline") or name) else get("banner", "headline")},
         {"kind": "points", "variant": "cards", "headline": get("points", "headline") or "이래서 좋아요",
          "body": "\n".join(f"{str(i.get('title') or '').strip()}: {str(i['text']).strip()}" for i in items)},
     ]
@@ -246,10 +226,10 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
     for i, photo in enumerate(uploads[1:3]):
         detail = detail_of.get(photo, {})
         sections.append({"kind": "split", "variant": pg.VARIANTS["split"][i % 2],
-                         "headline": _not_a_label(str(detail.get("headline") or "").strip()),
+                         "headline": str(detail.get("headline") or "").strip(),
                          "body": str(detail.get("body") or "").strip(), "photo": photo})
-    sections.append({"kind": "scene", "headline": _not_a_label(_unless(get("scene", "headline"), get("scene", "photo_instruction"))),
-                     "body": _unless(get("scene", "body"), get("scene", "photo_instruction")), "photo": uploads[0]})
+    sections.append({"kind": "scene", "headline": get("scene", "headline"), "body": get("scene", "body"),
+                     "photo": uploads[0]})
     if uploads[3:]:
         sections.append({"kind": "gallery", "variant": "grid-2" if len(uploads[3:]) > 1 else "stack",
                          "headline": pg.GALLERY_TITLE, "body": "", "photos": uploads[3:]})
