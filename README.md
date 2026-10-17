@@ -18,7 +18,7 @@ uv run python -m pagegen.server
 
 ## 설정 (환경 변수)
 
-`MLX_URL`, `TEXT_MODEL`, `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR`, `PAGEGEN_TRACE`(1이고 `.env`에 키가 있으면 앱도 LangSmith 프로젝트 `pagegen-app`에 추적), `LANGSMITH_API_KEY`·`LANGSMITH_PROJECT`(`.env`) — 기본값은 설계 문서 §2를 참고하세요.
+`MLX_URL`, `TEXT_MODEL`, `COPY_MODEL`(첫 초안 문구 모델, 기본 `TEXT_MODEL`. 2단계 채택 모델: `local/Qwen3.8-9B-pagegen-copy-r1-8bit`), `IMAGE_MODEL`, `IMAGE_STEPS`, `PROJECTS_DIR`, `PAGEGEN_TRACE`(1이고 `.env`에 키가 있으면 앱도 LangSmith 프로젝트 `pagegen-app`에 추적), `LANGSMITH_API_KEY`·`LANGSMITH_PROJECT`(`.env`) — 기본값은 설계 문서 §2를 참고하세요.
 
 ## 구조 (LangChain · LangGraph)
 
