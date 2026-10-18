@@ -33,6 +33,8 @@
 16. [문서 안내](#docs)
 17. [알려진 제한](#limits)
 
+> 성과 · 문제 해결 사례 · 이력서용 문장은 [`docs/portfolio.md`](docs/portfolio.md)에 따로 정리했습니다.
+
 <br>
 
 <a id="overview"></a>
@@ -60,23 +62,29 @@
 
 ## 🏗️ 시스템 구성
 
-```text
-브라우저 (static/index.html: 채팅 + 미리보기)
-   │  HTTP
-   ▼
-FastAPI  pagegen.server  (127.0.0.1:8000, 모델 호출은 한 번에 하나)
-   ├─ pagegen.agent   LangGraph 그래프 두 개: 첫 초안 · 채팅 한 턴
-   ├─ pagegen.page    page.json 상태와 도구의 순수 로직 (숫자 · 최상급 · 한자 검사)
-   ├─ pagegen.render  page.json → HTML, Playwright로 PNG · JPG
-   └─ pagegen.store   projects/<id>/ 폴더 (사진 · page.json · chat.json · versions/)
-   │
-   ▼  LangChain ChatOpenAI (OpenAI 호환 API) · 사진 편집만 직접 HTTP
-MLX Serve (127.0.0.1:11234)
-   ├─ Qwen3.8-9B 4bit         분석 · 채팅 · 도구 선택 · 사실 판정
-   ├─ 문구 SFT 모델 (8bit)     첫 초안 문구 (사진 설명이 없을 때)
-   └─ Qwen-Image 2.1 4bit     사진 편집(연출 컷)
-```
+<p align="center"><img src="docs/diagrams/system.png" alt="시스템 구성: 브라우저 → FastAPI 서버 → 에이전트 그래프 · 저장소 · 렌더 → 페이지 도구 · 모델 클라이언트 → MLX Serve" width="860"></p>
 
+| 모듈 | 하는 일 |
+|---|---|
+| `pagegen.server` | FastAPI, 127.0.0.1:8000. 모델을 쓰는 요청은 한 번에 하나 |
+| `pagegen.agent` | LangGraph 그래프 두 개: 첫 초안 · 채팅 한 턴 |
+| `pagegen.page` | `page.json` 상태와 도구의 순수 로직 (숫자 · 최상급 · 한자 검사) |
+| `pagegen.render` | `page.json` → HTML, Playwright로 PNG · JPG |
+| `pagegen.store` | `projects/<id>/` 폴더 (사진 · `page.json` · `chat.json` · `versions/`) |
+| `pagegen.llm` | MLX Serve 클라이언트. Qwen3.8-9B 4bit(분석 · 채팅 · 판정), 문구 SFT 8bit(사진 설명 없는 초안 문구), Qwen-Image 2.1(사진 편집) |
+
+모듈 사이 호출 수는 [graphify](https://github.com/Graphify-Labs/graphify) 코드 그래프로 셌습니다. 대상은 `pagegen/` AST이고, 노드 211 · 엣지 443 · 커뮤니티 7입니다.
+
+| 호출 | 수 | 내용 |
+|---|---|---|
+| agent → page | 24 | 도구 실행 · 문구 검사 · 섹션 조립 |
+| server → store | 16 | 업로드 · 저장 · 되돌리기 · 파일 경로 |
+| agent → llm | 11 | 분석 · 사진 설명 · 문구 · 판정 · 채팅 · 사진 편집 |
+| server → agent | 2 | `make_draft` · `chat_turn` |
+| server → render | 2 | 미리보기 HTML · 내보내기 |
+
+- 연결이 가장 많은 노드는 `LLMError`와 `ToolError`(각 15)입니다. 특히 `LLMError`는 커뮤니티 5개를 잇습니다. 모델 오류가 서버 응답(502)까지 그대로 올라가는 구조이기 때문입니다.
+- import 순환은 없습니다.
 - 모델 호출은 LangChain `ChatOpenAI`가 MLX Serve로 보냅니다.
   - Qwen thinking은 `extra_body`로 넘깁니다.
   - 도구는 `bind_tools`, JSON은 `json_schema` 구조화 출력입니다.
@@ -90,6 +98,8 @@ MLX Serve (127.0.0.1:11234)
 ## 🔄 처리 흐름
 
 ### 첫 초안 (고정 순서)
+
+<p align="center"><img src="docs/diagrams/draft-graph.png" alt="첫 초안 LangGraph: 사진 분석 → 사진 설명 → 문구 작성 → 섹션 조립 → 사실 검사 → 연출 컷 → 첫 메시지, 분석 · 문구 · 검사 실패 시 초안 없음" width="860"></p>
 
 ```text
 POST /projects  사진 + 상품명 + 설명
@@ -109,10 +119,7 @@ POST /projects  사진 + 상품명 + 설명
 
 ### 채팅 한 턴 (도구 호출)
 
-```text
-START → model ⇄ tools → END
-        (텍스트로 답하거나, ask_user를 부르거나, 4라운드에 이르면 끝)
-```
+<p align="center"><img src="docs/diagrams/chat-graph.png" alt="채팅 한 턴: 모델 호출 ⇄ 도구 실행, 텍스트 답장 · ask_user 질문 · 4라운드 도달로 끝남" width="860"></p>
 
 | 도구 | 하는 일 |
 |---|---|
@@ -368,6 +375,80 @@ uv run python scripts/smoke.py --photo path/to/product.jpg --out path/to/out
   - 실제 상품 설명 · 문구를 보내려면 `PAGEGEN_TRACE=1`로 띄웁니다(프로젝트 `pagegen-app`).
 - **월간 추적 한도를 넘으면 429가 납니다.** 그때는 `LANGSMITH_TRACING=false`를 주고 실행합니다. 결과에는 영향이 없습니다.
 
+<p align="center"><img src="docs/diagrams/tracing.png" alt="LangSmith 추적 경로: 앱 서버는 꺼짐, 평가 · 학습 스크립트와 pytest가 pagegen-dev로 보냄" width="860"></p>
+
+### LangSmith · LangChain · LangGraph 로그 점검 (2026-10-18)
+
+LangSmith API로 계정의 프로젝트와 run을 읽어서 정리했습니다. 읽기만 했고, 기록을 지우거나 고치지는 않았습니다. 시간은 모두 KST입니다.
+
+**프로젝트**
+
+| 프로젝트 | 무엇이 쌓였나 | 규모 | 기간 |
+|---|---|---|---|
+| `pagegen-dev` | 평가 · 학습 스크립트, pytest | trace 2,273 · run 21,924 · 토큰 2,110,462 · 오류율 0.48% | 10-16 20:39 ~ 10-17 22:11 |
+| `judge-*` 실험 9개 | `eval_judge.py`의 `evaluate()`. 판정 원본 · r1 · r2 비교 | 실험마다 run 150~181, 평가자 run 1,474 | 10-17 00:17 ~ 14:28 |
+| 데이터셋 2개 | `pagegen-judge-eval-e79eec00` · `-6e04d736` | 각 예제 150개 | 10-17 |
+| `pagegen-app` · `pagegen-finetune` | 만들어진 적 없음 | 0 | — |
+
+**LangChain: `pagegen-dev`의 run 구성**
+
+| 루트 run | 수 | 정체 |
+|---|---|---|
+| `RunnableSequence` | 2,105 | `llm.chat_json` 한 번입니다. 자식은 `ChatOpenAI` → `JsonOutputParser`(`RunnableWithFallbacks`)이고, `with_structured_output(json_schema, include_raw=True)`가 만드는 체인입니다 |
+| `ChatOpenAI` | 53 | `llm.chat`. 도구 선택 등 구조화 출력이 없는 호출입니다 |
+| `LangGraph` | 117 | 초안 · 채팅 그래프입니다. 아래에서 보듯 전부 pytest입니다 |
+
+- `ChatOpenAI` 호출 2,156번의 지연은 p50 3.1초 · p95 11.3초 · 최대 19.9초입니다.
+- 호출한 모델은 다음과 같습니다.
+  - `empero-ai/Qwen3.8-9B-Distill-MLX-4bit` 2,141번
+  - 판정 r1 · r2 각 8번 (`eval_tools.py` 판정 문항)
+- 문구 SFT 모델(`local/...-copy-r1-8bit`) 호출은 없습니다. 2-2 평가는 한도가 찬 뒤(10-18)에 돌렸기 때문입니다. 2-2의 기록은 로컬 로그와 [보고서](docs/finetune/2026-10-18-copy-2-2-report.md)뿐입니다.
+
+**LangGraph**
+
+- LangGraph trace 117건은 모두 pytest의 고정 데이터입니다. 입력이 `tests/conftest.py`의 텀블러 페이지(`20261016-153012-ab12`)였습니다.
+  - 10-17 21:26~21:46 사이에 몰려 있습니다.
+  - 한 건이 0.03초 안에 끝났습니다. 가짜 모델이기 때문입니다.
+- 실제 초안 · 채팅 그래프는 한 번도 추적되지 않았습니다.
+  - 앱 서버가 추적을 끄기 때문입니다.
+  - `eval_tools.py`도 그래프 없이 `llm.chat` · `agent.judge`를 바로 부릅니다.
+  - 그래서 단계별 실측 시간은 아래 [측정](#measure)이 유일한 기록입니다.
+- trace에 남은 노드 구성은 코드와 같습니다. 초안은 7개 노드(`analyze` … `first_message`), 채팅은 `model` ⇄ `tools`입니다.
+
+**오류 run 24개**
+
+| 수 | 오류 | 출처 |
+|---|---|---|
+| 18 | `LLMError`: JSON 두 번 실패 · 주장 검사 불가 · 연결 거부 (각 3건, 노드 + 그래프) | pytest가 일부러 낸 실패 |
+| 6 | `LengthFinishReasonError`: 출력 길이 한도에 닿음 (실제 2건, 체인 단계마다 기록) | 실제 모델 호출. `chat_json`이 한 번 다시 부름 |
+
+**로컬 로그 (`.local/finetune/`, Git 제외)**
+
+| 로그 | `JSON retry` | 429 | 비고 |
+|---|---|---|---|
+| `copy/drafts/train-teacher.log` | 7 | 0 | 학습용 teacher 초안 검사 |
+| `copy/drafts/dev-2-1-final.log` · `dev-2-1-v3.log` | 2 · 2 | 0 · 108 | v3는 한도가 찬 직후(10-17 22:19) 첫 실행 |
+| `judge/test-Qwen3.8-9B-Distill-MLX-4bit.log` | 1 | 0 | 판정 원본 시험 |
+| 나머지 21개 | 0 | 0 | 2-2 회귀(`eval-tools-2-2.log`): 도구 11/13, 판정 8/8 |
+
+- 429 이후 실행은 모두 `LANGSMITH_TRACING=false`로 돌려서 429가 없습니다.
+- 지금 띄워 둔 앱 서버 로그에도 경고 · 오류가 없습니다.
+
+**발견한 문제**
+
+1. **pytest가 LangSmith로 trace를 보냈습니다. (10-18 고침)**
+   - `tests/test_copy_eval.py` · `test_finetune.py`가 `scripts.finetune.*`를 import합니다.
+   - 그러면 `enable_dev_tracing()`이 import 시점에 `LANGSMITH_TRACING=true`를 켭니다. 직접 확인했습니다.
+   - 전체 실행에서는 `test_server.py`가 수집 단계에서 서버를 import하면서 추적을 다시 껐습니다. 그래서 일부 파일만 돌린 실행에서만 새어 나갔습니다. LangGraph 117건이 이렇게 들어왔습니다.
+   - 데이터가 합성이라 정책 위반은 아니었습니다. 하지만 월간 한도를 썼습니다.
+   - 고친 방법: `tests/conftest.py`가 추적 변수 네 개를 먼저 `false`로 고정합니다. `enable_dev_tracing`이 `setdefault`라서 이 값을 덮지 못합니다.
+   - 회귀 테스트: `test_the_suite_sends_no_traces`. 고치기 전에는 이 테스트만 따로 돌리면 실패했습니다.
+2. **스크립트가 정한 프로젝트 이름이 쓰이지 않습니다. (아직 고치지 않음)**
+   - `judge_data.py`는 `pagegen-finetune`으로 보내도록 되어 있지만, 그 프로젝트는 없고 모두 `pagegen-dev`에 섞였습니다.
+   - `enable_dev_tracing`이 `setdefault`라서, `.env`나 셸에 `LANGSMITH_PROJECT`가 있으면 그 값이 이기는 것으로 보입니다.
+
+<a id="measure"></a>
+
 ### 측정 (2026-10-16, 이 Mac)
 
 | 작업 | 시간 | 목표 |
@@ -391,7 +472,7 @@ uv run pytest -q                       # 단위 테스트
 uv run python scripts/eval_tools.py    # 실모델 회귀
 ```
 
-**180개 테스트**가 실제 모델 호출 없이 통과합니다(2026-10-18). 모델은 대본대로 답하는 가짜 객체로 바꿔 끼웁니다. 검증 범위는 다음과 같습니다.
+**181개 테스트**가 실제 모델 호출 없이 통과합니다(2026-10-18). 테스트는 LangSmith로 추적을 보내지 않습니다. 모델은 대본대로 답하는 가짜 객체로 바꿔 끼웁니다. 검증 범위는 다음과 같습니다.
 
 - 도구 로직: 섹션 추가 · 삭제 · 이동 · 변형, 숫자 · 최상급 · 한자 · 스펙 표 검사
 - 첫 초안: 사진 배치, 사진 설명 실패 시 처리, 판정 fail-closed, 문구 모델 선택
@@ -430,6 +511,7 @@ page-generation-v2/
 │   └── finetune/      # 판정 · 문구 파인튜닝 데이터 · 평가 · 병합
 ├── tests/             # 단위 테스트 (모델 호출 없음)
 ├── docs/              # 스펙 · 계획 · 파인튜닝 보고서
+│   └── diagrams/      # README 다이어그램 (HTML 원본 + PNG)
 └── pyproject.toml     # Python 3.13, uv
 ```
 
@@ -450,6 +532,8 @@ page-generation-v2/
 | 문구 개선 2단계 설계 | [`copy-phase2-design.md`](docs/superpowers/specs/2026-10-17-copy-phase2-design.md) |
 | 구현 계획 | [`docs/superpowers/plans/`](docs/superpowers/plans) |
 | 파인튜닝 보고서 · 검토 | [`docs/finetune/`](docs/finetune) |
+| 포트폴리오 정리 (성과 · 문제 해결 사례 · 이력서 문장) | [`portfolio.md`](docs/portfolio.md) |
+| 다이어그램 원본 | [`docs/diagrams/`](docs/diagrams). diagram-design 스킬로 그린 HTML입니다. PNG는 Playwright로 `<svg>`만 2배 크기로 찍었습니다 |
 
 <br>
 

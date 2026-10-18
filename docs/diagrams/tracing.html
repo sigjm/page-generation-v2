@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangSmith 추적 경로</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', 'Noto Sans KR', sans-serif; background: #f5f5f5; color: #2d3142; padding: 3rem 2rem; display: flex; justify-content: center; }
+    .frame { max-width: 1200px; width: 100%; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.66rem; letter-spacing: 0.18em; text-transform: uppercase; color: #4f5d75; margin-bottom: 0.5rem; }
+    h1 { font-family: 'Instrument Serif', 'Noto Serif KR', serif; font-weight: 400; font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 1.5rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .nm { font: 600 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #2d3142; }
+    .sub { font: 400 9px 'Geist Mono', monospace; fill: #4f5d75; }
+    .tag { font: 500 7px 'Geist Mono', monospace; letter-spacing: 0.08em; }
+    .lbl { font: 400 8px 'Geist Mono', monospace; fill: #7a8399; letter-spacing: 0.06em; }
+    .ko { font: 500 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #7a8399; }
+    .key { font: 500 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #4f5d75; }
+    .aside { font: italic 400 14px 'Instrument Serif', 'Noto Serif KR', serif; fill: #4f5d75; }
+    .zone { font: 500 7px 'Geist Mono', monospace; fill: rgba(45,49,66,0.40); letter-spacing: 0.14em; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">LangSmith · 2026-10-18 점검</p>
+    <h1>추적이 가는 곳</h1>
+
+    <svg viewBox="0 40 960 444" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tracing-title tracing-desc">
+      <title id="tracing-title">LangSmith 추적 경로</title>
+      <desc id="tracing-desc">앱 서버는 PAGEGEN_TRACE=1일 때만 pagegen-app으로 보내며 실제로 보낸 적이 없고, 평가 · 학습 스크립트는 pagegen-dev와 판정 실험으로 보내며, 단위 테스트도 스크립트 모듈을 import하면서 추적이 켜져 pagegen-dev로 보낸다는 것을 보여 주는 그림.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect x="0" y="0" width="960" height="484" fill="#f5f5f5"/>
+
+      <!-- zone: LangSmith cloud -->
+      <rect x="616" y="56" width="288" height="336" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="628" y="60" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="672" y="69" class="zone" text-anchor="middle">LANGSMITH CLOUD</text>
+
+      <!-- arrows -->
+      <line x1="240" y1="120" x2="640" y2="120" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <rect x="396" y="102" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="440" y="111" class="lbl" text-anchor="middle">PAGEGEN_TRACE=1</text>
+
+      <line x1="240" y1="216" x2="640" y2="216" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <rect x="410" y="198" width="60" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="440" y="207" class="lbl" text-anchor="middle">EVALUATE()</text>
+
+      <path d="M240,240 H392 Q400,240 400,248 V308 Q400,316 408,316 H640" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <rect x="470" y="298" width="108" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="524" y="307" class="lbl" text-anchor="middle">ENABLE_DEV_TRACING</text>
+
+      <line x1="240" y1="340" x2="640" y2="340" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+      <rect x="390" y="346" width="100" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="440" y="358" class="ko" text-anchor="middle">import 시 켜짐</text>
+
+      <!-- sources -->
+      <rect x="40" y="88" width="200" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="88" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="48" y="94" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="60" y="103" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">APP</text>
+      <text x="140" y="126" class="nm" text-anchor="middle">앱 서버</text>
+      <text x="140" y="142" class="sub" text-anchor="middle">pagegen.server · default off</text>
+
+      <rect x="40" y="192" width="200" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="192" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="48" y="198" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="60" y="207" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">DEV</text>
+      <text x="140" y="230" class="nm" text-anchor="middle">평가 · 학습 스크립트</text>
+      <text x="140" y="246" class="sub" text-anchor="middle">eval_tools · finetune/*</text>
+
+      <rect x="40" y="296" width="200" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="296" width="200" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="48" y="302" width="28" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="62" y="311" class="tag" fill="#eb6c36" text-anchor="middle">TEST</text>
+      <text x="140" y="334" class="nm" text-anchor="middle">단위 테스트</text>
+      <text x="140" y="350" class="sub" text-anchor="middle">pytest · fake LLM</text>
+
+      <!-- LangSmith projects -->
+      <rect x="640" y="88" width="240" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="640" y="88" width="240" height="64" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <rect x="648" y="94" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="668" y="103" class="tag" fill="rgba(45,49,66,0.6)" text-anchor="middle">PROJECT</text>
+      <text x="760" y="126" class="nm" text-anchor="middle">앱 추적</text>
+      <text x="760" y="142" class="sub" text-anchor="middle">pagegen-app · 0 traces</text>
+
+      <rect x="640" y="192" width="240" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="640" y="192" width="240" height="64" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="648" y="198" width="56" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="676" y="207" class="tag" fill="rgba(45,49,66,0.6)" text-anchor="middle">EXPERIMENT</text>
+      <text x="760" y="230" class="nm" text-anchor="middle">판정 실험</text>
+      <text x="760" y="246" class="sub" text-anchor="middle">9 experiments · 2 datasets</text>
+
+      <rect x="640" y="296" width="240" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="640" y="296" width="240" height="80" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="648" y="302" width="40" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="668" y="311" class="tag" fill="rgba(45,49,66,0.6)" text-anchor="middle">PROJECT</text>
+      <text x="760" y="334" class="nm" text-anchor="middle">개발 추적</text>
+      <text x="760" y="350" class="sub" text-anchor="middle">pagegen-dev · 2,273 traces</text>
+      <text x="760" y="364" class="sub" text-anchor="middle">LangGraph 117 = all pytest</text>
+
+      <!-- aside -->
+      <text x="40" y="396" class="aside">마지막 trace 10-17 22:11 KST, 이후 월간 한도 초과(429).</text>
+      <text x="40" y="416" class="aside">지금은 LANGSMITH_TRACING=false로 실행합니다.</text>
+
+      <!-- legend -->
+      <line x1="40" y1="440" x2="920" y2="440" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="468" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <line x1="112" y1="462" x2="140" y2="462" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <text x="148" y="467" class="key">추적 전송</text>
+      <line x1="236" y1="462" x2="264" y2="462" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <text x="272" y="467" class="key">켜진 적 없음</text>
+      <line x1="380" y1="462" x2="408" y2="462" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+      <text x="416" y="467" class="key">의도하지 않은 전송 (10-18 차단)</text>
+      <rect x="648" y="456" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="672" y="467" class="key">LangSmith 프로젝트</text>
+    </svg>
+  </div>
+</body>
+</html>

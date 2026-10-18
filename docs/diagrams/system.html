@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>시스템 구성</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', 'Noto Sans KR', sans-serif; background: #f5f5f5; color: #2d3142; padding: 3rem 2rem; display: flex; justify-content: center; }
+    .frame { max-width: 1200px; width: 100%; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.66rem; letter-spacing: 0.18em; text-transform: uppercase; color: #4f5d75; margin-bottom: 0.5rem; }
+    h1 { font-family: 'Instrument Serif', 'Noto Serif KR', serif; font-weight: 400; font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 1.5rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .nm { font: 600 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #2d3142; }
+    .sub { font: 400 9px 'Geist Mono', monospace; fill: #4f5d75; }
+    .tag { font: 500 7px 'Geist Mono', monospace; letter-spacing: 0.08em; }
+    .lbl { font: 400 8px 'Geist Mono', monospace; fill: #7a8399; letter-spacing: 0.06em; }
+    .ko { font: 500 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #4f5d75; }
+    .zone { font: 500 7px 'Geist Mono', monospace; fill: rgba(45,49,66,0.40); letter-spacing: 0.14em; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · pagegen v2</p>
+    <h1>시스템 구성</h1>
+
+    <svg viewBox="0 64 960 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="system-title system-desc">
+      <title id="system-title">pagegen v2 시스템 구성</title>
+      <desc id="system-desc">브라우저가 FastAPI 서버를 부르고, 서버는 LangGraph 에이전트 · 저장소 · 렌더러를 쓰며, 에이전트는 페이지 도구와 LangChain 모델 클라이언트를 거쳐 로컬 MLX Serve의 세 모델을 부르는 구조.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect x="0" y="0" width="960" height="576" fill="#f5f5f5"/>
+
+      <!-- zone: the FastAPI process -->
+      <rect x="172" y="108" width="564" height="396" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="184" y="112" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="228" y="121" class="zone" text-anchor="middle">PAGEGEN PROCESS</text>
+
+      <!-- arrows -->
+      <line x1="152" y1="312" x2="188" y2="312" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="332" y1="312" x2="372" y2="312" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <path d="M260,280 V180 Q260,172 268,172 H372" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <path d="M260,344 V444 Q260,452 268,452 H372" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="532" y1="164" x2="572" y2="164" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+      <path d="M532,188 H544 Q552,188 552,196 V428 Q552,436 560,436 H572" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="532" y1="460" x2="572" y2="460" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="716" y1="172" x2="784" y2="172" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <rect x="722" y="154" width="56" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="750" y="163" class="lbl" text-anchor="middle">OPENAI API</text>
+
+      <!-- browser (input) -->
+      <rect x="40" y="280" width="112" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="280" width="112" height="64" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="48" y="286" width="20" height="12" rx="2" fill="none" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="58" y="295" class="tag" fill="#7a8399" text-anchor="middle">UI</text>
+      <text x="96" y="318" class="nm" text-anchor="middle">브라우저</text>
+      <text x="96" y="334" class="sub" text-anchor="middle">index.html</text>
+
+      <!-- server -->
+      <rect x="188" y="280" width="144" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="188" y="280" width="144" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="196" y="286" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="208" y="295" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">API</text>
+      <text x="260" y="318" class="nm" text-anchor="middle">FastAPI 서버</text>
+      <text x="260" y="334" class="sub" text-anchor="middle">pagegen.server</text>
+
+      <!-- agent (focal) -->
+      <rect x="372" y="140" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="372" y="140" width="160" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="380" y="146" width="52" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="406" y="155" class="tag" fill="#eb6c36" text-anchor="middle">LANGGRAPH</text>
+      <text x="452" y="178" class="nm" text-anchor="middle">에이전트 그래프</text>
+      <text x="452" y="194" class="sub" text-anchor="middle">pagegen.agent</text>
+
+      <!-- store -->
+      <rect x="372" y="280" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="372" y="280" width="160" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="380" y="286" width="32" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="396" y="295" class="tag" fill="#4f5d75" text-anchor="middle">FILES</text>
+      <text x="452" y="318" class="nm" text-anchor="middle">프로젝트 저장소</text>
+      <text x="452" y="334" class="sub" text-anchor="middle">projects/&lt;id&gt;/</text>
+
+      <!-- render -->
+      <rect x="372" y="420" width="160" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="372" y="420" width="160" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="380" y="426" width="36" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="398" y="435" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">RENDER</text>
+      <text x="452" y="458" class="nm" text-anchor="middle">미리보기 · 내보내기</text>
+      <text x="452" y="474" class="sub" text-anchor="middle">Playwright · PNG</text>
+
+      <!-- llm client -->
+      <rect x="572" y="140" width="144" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="572" y="140" width="144" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="580" y="146" width="52" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="606" y="155" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">LANGCHAIN</text>
+      <text x="644" y="178" class="nm" text-anchor="middle">모델 클라이언트</text>
+      <text x="644" y="194" class="sub" text-anchor="middle">llm · ChatOpenAI</text>
+
+      <!-- page tools -->
+      <rect x="572" y="420" width="144" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="572" y="420" width="144" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="580" y="426" width="32" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="596" y="435" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">TOOLS</text>
+      <text x="644" y="458" class="nm" text-anchor="middle">페이지 도구</text>
+      <text x="644" y="474" class="sub" text-anchor="middle">pagegen.page</text>
+
+      <!-- MLX Serve (external, local process) -->
+      <rect x="784" y="140" width="136" height="204" rx="6" fill="#f5f5f5"/>
+      <rect x="784" y="140" width="136" height="204" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <rect x="792" y="146" width="32" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.30)" stroke-width="0.8"/>
+      <text x="808" y="155" class="tag" fill="rgba(45,49,66,0.6)" text-anchor="middle">LOCAL</text>
+      <text x="852" y="178" class="nm" text-anchor="middle">MLX Serve</text>
+      <text x="852" y="194" class="sub" text-anchor="middle">:11234</text>
+      <rect x="796" y="212" width="112" height="36" rx="4" fill="#ffffff" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="852" y="226" class="sub" fill="#2d3142" text-anchor="middle">Qwen3.8-9B 4bit</text>
+      <text x="852" y="242" class="ko" text-anchor="middle">분석·채팅·판정</text>
+      <rect x="796" y="252" width="112" height="36" rx="4" fill="#ffffff" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="852" y="266" class="sub" fill="#2d3142" text-anchor="middle">copy SFT r1 8bit</text>
+      <text x="852" y="282" class="ko" text-anchor="middle">초안 문구</text>
+      <rect x="796" y="292" width="112" height="36" rx="4" fill="#ffffff" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="852" y="306" class="sub" fill="#2d3142" text-anchor="middle">Qwen-Image 2.1</text>
+      <text x="852" y="322" class="ko" text-anchor="middle">사진 편집</text>
+
+      <!-- legend -->
+      <line x1="40" y1="528" x2="920" y2="528" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="556" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="120" y="544" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="144" y="555" class="ko">LangGraph 그래프</text>
+      <rect x="284" y="544" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="308" y="555" class="ko">모듈</text>
+      <rect x="368" y="544" width="16" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="392" y="555" class="ko">파일 저장</text>
+      <rect x="480" y="544" width="16" height="12" rx="2" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="504" y="555" class="ko">로컬 모델 서버</text>
+      <rect x="624" y="544" width="16" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="648" y="555" class="ko">사용자 화면</text>
+      <line x1="748" y1="550" x2="776" y2="550" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <text x="784" y="555" class="ko">모델 호출</text>
+    </svg>
+  </div>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>채팅 한 턴</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Geist', 'Noto Sans KR', sans-serif; background: #f5f5f5; color: #2d3142; padding: 3rem 2rem; display: flex; justify-content: center; }
+    .frame { max-width: 1200px; width: 100%; }
+    .eyebrow { font-family: 'Geist Mono', monospace; font-size: 0.66rem; letter-spacing: 0.18em; text-transform: uppercase; color: #4f5d75; margin-bottom: 0.5rem; }
+    h1 { font-family: 'Instrument Serif', 'Noto Serif KR', serif; font-weight: 400; font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 1.5rem; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .nm { font: 600 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #2d3142; }
+    .sub { font: 400 9px 'Geist Mono', monospace; fill: #4f5d75; }
+    .tag { font: 500 7px 'Geist Mono', monospace; letter-spacing: 0.08em; }
+    .lbl { font: 400 8px 'Geist Mono', monospace; fill: #7a8399; letter-spacing: 0.06em; }
+    .ko { font: 500 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #7a8399; }
+    .key { font: 500 12px 'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; fill: #4f5d75; }
+    .aside { font: italic 400 14px 'Instrument Serif', 'Noto Serif KR', serif; fill: #4f5d75; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">LangGraph · build_chat_graph</p>
+    <h1>채팅 한 턴</h1>
+
+    <svg viewBox="0 72 960 384" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="chat-graph-title chat-graph-desc">
+      <title id="chat-graph-title">채팅 한 턴 LangGraph 상태도</title>
+      <desc id="chat-graph-desc">사용자 메시지와 최근 6턴이 모델 호출로 들어가고, 모델이 도구를 부르면 도구 실행 결과나 오류 문장을 모델에게 돌려주는 순환을 돌다가, 텍스트 답장, ask_user 질문, 4라운드 도달 중 하나로 턴이 끝나는 상태도.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect x="0" y="0" width="960" height="456" fill="#f5f5f5"/>
+
+      <!-- transitions -->
+      <line x1="62" y1="240" x2="168" y2="240" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="87" y="218" width="56" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="115" y="230" class="ko" text-anchor="middle">최근 6턴</text>
+
+      <line x1="328" y1="228" x2="488" y2="228" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="378" y="210" width="60" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="408" y="219" class="lbl" text-anchor="middle">TOOL_CALLS</text>
+
+      <line x1="488" y1="252" x2="328" y2="252" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="356" y="258" width="104" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="408" y="270" class="ko" text-anchor="middle">결과 · 오류 문장</text>
+
+      <path d="M248,204 V120 Q248,112 256,112 H728" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="446" y="90" width="92" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="492" y="102" class="ko" text-anchor="middle">도구 호출 없음</text>
+
+      <line x1="648" y1="240" x2="728" y2="240" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="664" y="222" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="688" y="231" class="lbl" text-anchor="middle">ASK_USER</text>
+
+      <path d="M568,276 V360 Q568,368 576,368 H728" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="612" y="346" width="80" height="16" rx="2" fill="#f5f5f5"/>
+      <text x="652" y="358" class="ko" text-anchor="middle">4라운드 도달</text>
+
+      <!-- start -->
+      <circle cx="56" cy="240" r="6" fill="#2d3142"/>
+
+      <!-- model -->
+      <rect x="168" y="204" width="160" height="72" rx="8" fill="#f5f5f5"/>
+      <rect x="168" y="204" width="160" height="72" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="176" y="210" width="24" height="12" rx="2" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="188" y="219" class="tag" fill="rgba(45,49,66,0.8)" text-anchor="middle">LLM</text>
+      <text x="248" y="246" class="nm" text-anchor="middle">모델 호출</text>
+      <text x="248" y="262" class="sub" text-anchor="middle">thinking · bind_tools</text>
+
+      <!-- tools (focal) -->
+      <rect x="488" y="204" width="160" height="72" rx="8" fill="#f5f5f5"/>
+      <rect x="488" y="204" width="160" height="72" rx="8" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="496" y="210" width="32" height="12" rx="2" fill="none" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="512" y="219" class="tag" fill="#eb6c36" text-anchor="middle">TOOLS</text>
+      <text x="568" y="246" class="nm" text-anchor="middle">도구 실행</text>
+      <text x="568" y="262" class="sub" text-anchor="middle">8 tools · verify</text>
+
+      <!-- outcomes -->
+      <rect x="728" y="84" width="160" height="56" rx="8" fill="#f5f5f5"/>
+      <rect x="728" y="84" width="160" height="56" rx="8" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="736" y="90" width="24" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="748" y="99" class="tag" fill="#4f5d75" text-anchor="middle">END</text>
+      <text x="808" y="118" class="nm" text-anchor="middle">텍스트 답장</text>
+      <text x="808" y="132" class="sub" text-anchor="middle">reply</text>
+
+      <rect x="728" y="212" width="160" height="56" rx="8" fill="#f5f5f5"/>
+      <rect x="728" y="212" width="160" height="56" rx="8" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="736" y="218" width="24" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="748" y="227" class="tag" fill="#4f5d75" text-anchor="middle">END</text>
+      <text x="808" y="246" class="nm" text-anchor="middle">사용자에게 질문</text>
+      <text x="808" y="260" class="sub" text-anchor="middle">ask_user</text>
+
+      <rect x="728" y="340" width="160" height="56" rx="8" fill="#f5f5f5"/>
+      <rect x="728" y="340" width="160" height="56" rx="8" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="736" y="346" width="24" height="12" rx="2" fill="none" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="748" y="355" class="tag" fill="#4f5d75" text-anchor="middle">END</text>
+      <text x="808" y="374" class="nm" text-anchor="middle">여기까지 반영</text>
+      <text x="808" y="388" class="sub" text-anchor="middle">MAX_ROUNDS = 4</text>
+
+      <!-- aside -->
+      <text x="168" y="332" class="aside">도구 오류는 예외가 아니라</text>
+      <text x="168" y="352" class="aside">모델이 다시 읽는 문장으로 돌아갑니다.</text>
+
+      <!-- legend -->
+      <line x1="40" y1="412" x2="920" y2="412" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="440" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <circle cx="112" cy="434" r="5" fill="#2d3142"/>
+      <text x="124" y="439" class="key">시작</text>
+      <rect x="180" y="428" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="204" y="439" class="key">상태</text>
+      <rect x="260" y="428" width="16" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="284" y="439" class="key">검사 · 수정이 일어나는 곳</text>
+      <rect x="460" y="428" width="16" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="484" y="439" class="key">턴 종료 (서버가 page.json · 버전 저장)</text>
+    </svg>
+  </div>
+</body>
+</html>
