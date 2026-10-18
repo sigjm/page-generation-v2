@@ -1,6 +1,12 @@
 import copy
+import os
 
 import pytest
+
+# Importing scripts.finetune.* calls enable_dev_tracing (setdefault). Pinning "false" first keeps every
+# test run, whole or partial, from sending fake drafts to LangSmith.
+for _name in ("LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGCHAIN_TRACING"):
+    os.environ[_name] = "false"
 
 PAGE = {
     "id": "20261016-153012-ab12",

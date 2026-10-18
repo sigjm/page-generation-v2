@@ -58,6 +58,16 @@ def test_server_turns_every_tracing_variable_off(monkeypatch):
     assert all(os.environ[name] == "false" for name in TRACING_VARS) and not lu.tracing_is_enabled()
 
 
+def test_the_suite_sends_no_traces(monkeypatch):
+    # the fine-tune scripts call enable_dev_tracing when imported; with a key in .env every pytest run
+    # sent its fake drafts to LangSmith (117 LangGraph traces on 2026-10-17)
+    import langsmith.utils as lu
+    monkeypatch.setenv("LANGSMITH_API_KEY", "k")
+    pagegen.enable_dev_tracing("pagegen-dev")
+    lu.get_env_var.cache_clear()
+    assert not lu.tracing_is_enabled()
+
+
 def test_pagegen_trace_turns_app_tracing_on(monkeypatch):
     from pagegen import server
     unset(monkeypatch, *TRACING_VARS, "LANGSMITH_PROJECT")
