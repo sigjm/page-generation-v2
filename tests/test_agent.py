@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pagegen import agent
+from pagegen import agent, prompts
 from pagegen.llm import LLMError
 
 OK = {"phrases": []}
@@ -24,7 +24,7 @@ class FakeLLM:
 
     def __init__(self, chats=(), jsons=(), edit=b"\x89PNG fake"):
         self.chats, self.jsons, self.edit = list(chats), list(jsons), edit
-        self.chat_calls, self.json_calls, self.json_kw = [], [], []
+        self.chat_calls, self.json_calls, self.json_kw, self.edited = [], [], [], []
 
     def chat(self, messages, **kw):
         self.chat_calls.append(json.loads(json.dumps(messages)))
@@ -39,11 +39,13 @@ class FakeLLM:
         return reply
 
     def edit_image(self, file, instruction):
-        if isinstance(self.edit, Exception):
-            raise self.edit
-        return self.edit
+        self.edited.append(instruction)
+        reply = self.edit(instruction) if callable(self.edit) else self.edit
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
-    def model_jpeg(self, file):
+    def model_jpeg(self, file, max_side=1280):
         return b"jpeg"
 
     def image_part(self, jpeg):
@@ -190,19 +192,27 @@ COPY = {"hero": {"headline": "하루 종일 따뜻하게", "body": "이중 진�
             {"title": "보냉", "text": "차갑게도 유지"}]},
         "scene": {"headline": "어디서나", "body": "", "photo_instruction": "원목 식탁 위"},
         "notice": {"headline": "관리", "body": "중성세제로 씻어 주세요. 습기에 주의하세요."}}
+MORE0 = {"scenes": [], "closing": {"headline": ""}}  # the extra-scenes call asking for nothing
 PRODUCT = {"name": "스테인리스 텀블러", "notes": "이중 진공 단열, 500ml, 색상 3종. 중성세제로 씻어 주세요"}
 
 
 class JudgeByContent(FakeLLM):
     """Analysis and copy are scripted; every judge call flags the text when it contains a `bad` phrase."""
 
-    def __init__(self, scripted, bad=(), fail=False, edit=b"png", unjudgeable=()):
+    def __init__(self, scripted, bad=(), fail=False, edit=b"png", unjudgeable=(), shots=()):
         super().__init__(jsons=scripted, edit=edit)
         self.bad, self.fail, self.unjudgeable, self.judged = bad, fail, unjudgeable, []
+        self.shots, self.shot_checks = list(shots), 0  # staged-shot verdicts in order; past the list every shot passes
 
     def chat_json(self, messages, schema, **kw):
         if self.jsons:
             return super().chat_json(messages, schema, **kw)
+        if schema is prompts.SHOT_SCHEMA:
+            self.shot_checks += 1
+            verdict = self.shots.pop(0) if self.shots else True
+            if isinstance(verdict, Exception):
+                raise verdict
+            return {"same_product": verdict, "natural_scene": True}
         if self.fail:
             raise LLMError("down")
         text = messages[1]["content"].split("새 문구: ", 1)[1]
@@ -213,7 +223,7 @@ class JudgeByContent(FakeLLM):
 
 
 def draft(folder, bad=(), fail=False, edit=b"png", scripted=None, unjudgeable=()):
-    fake = JudgeByContent([ANALYSIS, COPY] if scripted is None else scripted, bad=bad, fail=fail, edit=edit,
+    fake = JudgeByContent([ANALYSIS, COPY, MORE0] if scripted is None else scripted, bad=bad, fail=fail, edit=edit,
                           unjudgeable=unjudgeable)
     photos = [{"id": "p1", "file": "photos/p1.jpg", "origin": "upload"}]
     page, message = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
@@ -250,7 +260,7 @@ def test_draft_flagged_headline_becomes_product_name(folder):
 def test_draft_point_with_any_flagged_part_is_dropped(folder):
     copy = {**COPY, "points": {"headline": "이래서 좋아요", "items": [
         {"title": "넉넉한 용량", "text": "500ml. 손으로 하나하나 만들었어요."}]}}
-    page, _, _ = draft(folder, bad=["손으로"], scripted=[ANALYSIS, copy])
+    page, _, _ = draft(folder, bad=["손으로"], scripted=[ANALYSIS, copy, MORE0])
     assert all(s["kind"] != "points" for s in page["sections"])  # no half-points without their title
 
 
@@ -336,9 +346,9 @@ COPY_L = {**COPY, "banner": {"headline": "식은 커피, 아쉽지 않으셨나�
                       {"headline": "매끈한 무광 표면", "body": "손자국이 덜 보여요."}]}
 
 
-def draft_n(folder, n, bad=(), copy=COPY_L, captions=CAPTIONS):
-    # call order: analysis, one caption call per split photo (p2, p3), copy, then judge calls
-    fake = JudgeByContent([ANALYSIS, *captions[:max(0, min(2, n - 1))], copy], bad=bad)
+def draft_n(folder, n, bad=(), copy=COPY_L, captions=CAPTIONS, more=MORE0, edit=b"png", shots=()):
+    # call order: analysis, one caption call per split photo (p2, p3), copy, extra scenes, judge calls, shot checks
+    fake = JudgeByContent([ANALYSIS, *captions[:max(0, min(2, n - 1))], copy, more], bad=bad, edit=edit, shots=shots)
     photos = [{"id": f"p{i}", "file": f"photos/p{i}.jpg", "origin": "upload"} for i in range(1, n + 1)]
     page, _ = agent.make_draft(folder, "20261016-153012-ab12", dict(PRODUCT), photos, fake)
     return page, fake
@@ -465,3 +475,85 @@ def test_check_sections_reports_dropped_sentences_with_reasons():
     assert tally["dropped"] == [{"text": "최고의 텀블러", "reason": "superlative"},
                                 {"text": "12시간 보냉.", "reason": "number"},
                                 {"text": "습기에 주의하세요.", "reason": "judge"}]
+
+
+MORE = {"scenes": [{"photo_instruction": "창가의 대리석 선반 위", "headline": "창가에 두면", "body": "햇살과 잘 어울려요."},
+                   {"photo_instruction": "캠핑 테이블 위", "headline": "밖에서도", "body": "어디든 함께해요."}],
+        "closing": {"headline": "오늘부터 함께해요"}}
+ONE = {**COPY_L, "details": []}
+
+
+def test_draft_one_photo_tops_up_to_four_photos_and_closes(folder):
+    page, fake = draft_n(folder, 1, copy=ONE, more=MORE)
+    assert layout(page) == [
+        ("hero", "below", "p1"), ("banner", "light", None), ("points", "cards", None), ("scene", None, "p1-e1"),
+        ("scene", None, "p1-e2"), ("scene", None, "p1-e3"), ("spec_table", None, None), ("notice", None, None),
+        ("banner", "dark", None)]
+    assert fake.edited == ["원목 식탁 위", "창가의 대리석 선반 위", "캠핑 테이블 위"]
+    assert (page["sections"][4]["headline"], page["sections"][-1]["headline"]) == ("창가에 두면", "오늘부터 함께해요")
+    assert "추가 장면 수: 2" in fake.json_calls[2][1]["content"] and "원목 식탁 위" in fake.json_calls[2][1]["content"]
+    assert fake.json_kw[2].get("model") is None  # the copy SFT never saw this prompt: the base model writes it
+    assert "햇살과 잘 어울려요." in fake.judged and "오늘부터 함께해요" in fake.judged
+
+
+@pytest.mark.parametrize("n, shots", [(1, 3), (2, 2), (3, 1), (5, 1)])
+def test_draft_staged_shots_only_fill_the_gap_to_four_photos(folder, n, shots):
+    page, fake = draft_n(folder, n, more=MORE)  # MORE offers two extra scenes every time
+    assert len(fake.edited) == shots
+    assert [s["photo"] for s in page["sections"] if s["kind"] == "scene"] == [f"p1-e{i}" for i in range(1, shots + 1)]
+    assert f"추가 장면 수: {shots - 1}" in fake.json_calls[min(2, n - 1) + 2][1]["content"]
+
+
+def test_draft_extra_scene_without_a_new_instruction_is_skipped(folder):
+    more = {**MORE, "scenes": [{"photo_instruction": "원목 식탁 위", "headline": "또", "body": ""},
+                               {"photo_instruction": " ", "headline": "빈", "body": ""}, *MORE["scenes"]]}
+    _, fake = draft_n(folder, 1, copy=ONE, more=more)
+    assert fake.edited == ["원목 식탁 위", "창가의 대리석 선반 위", "캠핑 테이블 위"]
+
+
+def test_draft_failed_extra_shot_drops_its_section(folder):
+    page, _ = draft_n(folder, 1, copy=ONE, more=MORE, edit=lambda i: LLMError("timeout") if "캠핑" in i else b"png")
+    assert [s["photo"] for s in page["sections"] if s["kind"] == "scene"] == ["p1-e1", "p1-e2"]
+    assert [s["id"] for s in page["sections"]] == [f"s{i}" for i in range(1, 9)]
+    assert [p["id"] for p in page["photos"]] == ["p1", "p1-e1", "p1-e2"]
+
+
+def test_draft_failed_main_shot_keeps_the_original_and_extras_go(folder):
+    page, _ = draft_n(folder, 1, copy=ONE, more=MORE, edit=LLMError("down"))
+    assert [s["photo"] for s in page["sections"] if s["kind"] == "scene"] == ["p1"]
+
+
+def test_draft_survives_a_failed_extra_scenes_call(folder):
+    page, _ = draft_n(folder, 1, copy=ONE, more=LLMError("JSON 두 번 실패"))
+    assert [s["kind"] for s in page["sections"]] == ["hero", "banner", "points", "scene", "spec_table", "notice"]
+
+
+@pytest.mark.parametrize("closing, bad", [(COPY_L["hero"]["headline"], ()), (COPY_L["banner"]["headline"], ()),
+                                          ("오늘부터 함께해요", ("오늘부터",))])
+def test_draft_closing_that_repeats_or_is_flagged_is_dropped(folder, closing, bad):
+    page, _ = draft_n(folder, 1, copy=ONE, more={**MORE, "closing": {"headline": closing}}, bad=bad)
+    assert [s["variant"] for s in page["sections"] if s["kind"] == "banner"] == ["light"]
+
+
+def test_draft_checks_every_staged_shot(folder):
+    _, fake = draft_n(folder, 1, copy=ONE, more=MORE)
+    assert fake.shot_checks == 3
+
+
+def test_draft_rejected_extra_shot_drops_its_section(folder):
+    page, _ = draft_n(folder, 1, copy=ONE, more=MORE, shots=[True, False, True])
+    assert [s["photo"] for s in page["sections"] if s["kind"] == "scene"] == ["p1-e1", "p1-e2"]
+    assert [p["id"] for p in page["photos"]] == ["p1", "p1-e1", "p1-e2"]  # the rejected edit is never saved
+    assert [s["id"] for s in page["sections"]] == [f"s{i}" for i in range(1, 9)]
+
+
+@pytest.mark.parametrize("verdict", [False, LLMError("JSON 두 번 실패")])  # an unchecked shot is not used either
+def test_draft_rejected_main_shot_keeps_the_original(folder, verdict):
+    page, _ = draft_n(folder, 1, copy=ONE, more=MORE, shots=[verdict])
+    assert [s["photo"] for s in page["sections"] if s["kind"] == "scene"] == ["p1", "p1-e1", "p1-e2"]
+
+
+def test_chat_photo_edit_is_not_shot_checked(page, folder):
+    fake = FakeLLM(chats=[{"tool_calls": [call("edit_photo", section_id="s1", instruction="대리석")]}, {"content": "바꿨어요."}])
+    _, changed = agent.chat_turn(folder, page, [], "배경 바꿔줘", fake)
+    assert changed and fake.json_calls == []  # the user sees the result and asks again

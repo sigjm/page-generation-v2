@@ -146,7 +146,7 @@ def _jpeg(im: Image.Image, quality: int) -> bytes:
     return buffer.getvalue()
 
 
-def model_jpeg(file: Path, max_side: int = 1280) -> bytes:
+def model_jpeg(file: Path | io.BytesIO, max_side: int = 1280) -> bytes:
     im = _upright_rgb(file)
     im.thumbnail((max_side, max_side))
     return _jpeg(im, 90)

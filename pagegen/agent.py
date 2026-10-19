@@ -1,4 +1,5 @@
 """Chat turns (tool calls, spec §4.2) and the first draft (fixed order, spec §4.1). `llm` is injectable for tests."""
+import io
 import json
 import re
 from collections.abc import Callable
@@ -13,6 +14,7 @@ from . import prompts
 from .llm import LLMError
 
 MAX_ROUNDS = 4
+PHOTO_TARGET = 4  # uploads + staged shots in a first draft; each staged shot is ~55 s of Qwen-Image
 HISTORY = 12  # the last 6 turns, user + assistant
 MUTATING = {"update_text", "edit_photo", "use_photo", "add_section", "remove_section", "move_section", "set_variant"}
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
@@ -69,11 +71,24 @@ def _verifier(llm, basis: str, old: str = "") -> Callable[[str], None]:
     return verify
 
 
-def edit_photo(folder: Path, page: dict, section_id: str, instruction: str, llm) -> str:
+def shot_ok(original: Path, png: bytes, llm) -> bool:
+    """The 9B compares a staged shot with its upload: same product, believable background (spec §4-6). Raises LLMError."""
+    data = llm.chat_json([{"role": "system", "content": prompts.SHOT_SYSTEM},
+                          {"role": "user", "content": [llm.image_part(llm.model_jpeg(original, 768)),
+                                                       llm.image_part(llm.model_jpeg(io.BytesIO(png), 768)),
+                                                       {"type": "text", "text": "원본과 연출 사진을 비교해 판정하라."}]}],
+                         prompts.SHOT_SCHEMA, max_tokens=200)
+    return data.get("same_product") is True and data.get("natural_scene") is True
+
+
+def edit_photo(folder: Path, page: dict, section_id: str, instruction: str, llm, check: bool = False) -> str:
+    """`check` is for the draft, where nobody has looked at the shot yet; in chat the user sees it and can ask again."""
     source = pg.edit_source(page, section_id)
     try:
         png = llm.edit_image(folder / source["file"], instruction)
-    except LLMError as e:
+        if check and not shot_ok(folder / source["file"], png, llm):
+            raise pg.ToolError("오류: 연출 컷이 원본과 다르거나 배경이 어색해 쓰지 않았습니다.")
+    except LLMError as e:  # a shot that could not be checked is not used either
         raise pg.ToolError(f"오류: 사진 편집에 실패해 이전 사진을 유지합니다. ({e})") from None
     photo = pg.add_edit(page, source["id"], instruction)
     (folder / photo["file"]).write_bytes(png)
@@ -200,12 +215,23 @@ def normalize_analysis(raw: dict, corpus: str) -> dict:
             "colors": strings("colors", 5), "facts": facts, "questions": strings("questions", 3)}
 
 
-def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) -> tuple[list[dict], str]:
-    """Spec §4 (layouts): p1 → hero/scene, p2·p3 → split, p4… → gallery. Returns (sections without ids, scene instruction)."""
-    def get(block: str, key: str) -> str:
-        part = copy.get(block)
-        return str(part.get(key) or "").strip() if isinstance(part, dict) else ""
+def extra_shots(photos: list[dict]) -> int:
+    """Staged shots beyond the main scene, so a draft with few photos still reaches PHOTO_TARGET photos."""
+    return max(0, PHOTO_TARGET - 1 - sum(1 for p in photos if p["origin"] == "upload"))
 
+
+def _text(part, key: str) -> str:
+    return str(part.get(key) or "").strip() if isinstance(part, dict) else ""
+
+
+def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict],
+                   more: dict | None = None) -> tuple[list[dict], list[str]]:
+    """Spec §4 (layouts): p1 → hero/scenes, p2·p3 → split, p4… → gallery, then the closing banner.
+    `more` is the extra-scenes reply. Returns (sections without ids, one edit instruction per scene section, in order)."""
+    def get(block: str, key: str) -> str:
+        return _text(copy.get(block), key)
+
+    more = more or {}
     uploads = [p["id"] for p in photos if p["origin"] == "upload"]
     points = copy.get("points") if isinstance(copy.get("points"), dict) else {}
     items = [i for i in points.get("items") or [] if isinstance(i, dict) and str(i.get("text") or "").strip()][:3]
@@ -230,6 +256,15 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
                          "body": str(detail.get("body") or "").strip(), "photo": photo})
     sections.append({"kind": "scene", "headline": get("scene", "headline"), "body": get("scene", "body"),
                      "photo": uploads[0]})
+    instructions = [get("scene", "photo_instruction") or "제품이 잘 어울리는 밝은 실내 공간"]
+    for scene in more.get("scenes") or []:
+        instruction = _text(scene, "photo_instruction")
+        if len(instructions) > extra_shots(photos):
+            break
+        if instruction and instruction not in instructions:  # a repeated scene is the same shot twice
+            sections.append({"kind": "scene", "headline": _text(scene, "headline"), "body": _text(scene, "body"),
+                             "photo": uploads[0]})
+            instructions.append(instruction)
     if uploads[3:]:
         sections.append({"kind": "gallery", "variant": "grid-2" if len(uploads[3:]) > 1 else "stack",
                          "headline": pg.GALLERY_TITLE, "body": "", "photos": uploads[3:]})
@@ -237,7 +272,23 @@ def build_sections(copy: dict, analysis: dict, name: str, photos: list[dict]) ->
         rows = "\n".join(f"{f['key']}: {f['value']}" for f in analysis["facts"])
         sections.append({"kind": "spec_table", "headline": "제품 정보", "body": rows})
     sections.append({"kind": "notice", "headline": get("notice", "headline") or "안내", "body": get("notice", "body")})
-    return sections, get("scene", "photo_instruction") or "제품이 잘 어울리는 밝은 실내 공간"
+    closing = _text(more.get("closing"), "headline")
+    if closing not in ("", get("hero", "headline") or name, get("banner", "headline")):
+        sections.append({"kind": "banner", "variant": "dark", "headline": closing, "body": ""})
+    return sections, instructions
+
+
+def more_scenes(seller: str, analysis: dict, copy: dict, n: int, llm) -> dict:
+    """Extra scenes and the closing line. Its own call so COPY_SCHEMA, and the copy SFT trained on it, stay as they
+    are; the base TEXT_MODEL writes it. A failure only costs the extras (spec §4)."""
+    main = _text(copy.get("scene"), "photo_instruction") or "(없음)"
+    try:
+        return llm.chat_json([{"role": "system", "content": prompts.SCENES_SYSTEM},
+                              {"role": "user", "content": f"{seller}\n사진 분석: {json.dumps(analysis, ensure_ascii=False)}\n"
+                                                          f"대표 연출 장면: {main}\n추가 장면 수: {n}"}],
+                             prompts.SCENES_SCHEMA)
+    except LLMError:
+        return {}
 
 
 def _clean(section: dict, corpus: str, basis: str, name: str, llm, tally: dict) -> None:
@@ -338,8 +389,9 @@ class DraftState(TypedDict, total=False):
     corpus: str
     seller: str
     copy: dict
+    more: dict
     sections: list[dict]
-    instruction: str
+    instructions: list[str]
     message: dict
 
 
@@ -369,12 +421,14 @@ def build_draft_graph(folder: Path, llm):
         # the copy model only ever saw the no-captions hint (phase 2-2); with captions it miscounts details
         model = None if split_lines else llm.COPY_MODEL
         copy = llm.chat_json(copy_messages(s["seller"], page["analysis"], hint), prompts.COPY_SCHEMA, model=model)
-        return {"copy": copy}
+        more = more_scenes(s["seller"], page["analysis"], copy, extra_shots(page["photos"]), llm)
+        return {"copy": copy, "more": more}
 
     def assemble(s: DraftState) -> dict:
         page = s["page"]
-        sections, instruction = build_sections(s["copy"], page["analysis"], page["product"]["name"], page["photos"])
-        return {"sections": _settle(sections), "instruction": instruction}
+        sections, instructions = build_sections(s["copy"], page["analysis"], page["product"]["name"], page["photos"],
+                                                s.get("more"))
+        return {"sections": _settle(sections), "instructions": instructions}
 
     def check(s: DraftState) -> dict:
         page = s["page"]
@@ -384,12 +438,16 @@ def build_draft_graph(folder: Path, llm):
 
     def edit_scene(s: DraftState) -> dict:
         page = s["page"]
-        scene = next((sec for sec in page["sections"] if sec["kind"] == "scene"), None)
-        if scene:
+        scenes = [sec for sec in page["sections"] if sec["kind"] == "scene"]
+        for i, (scene, instruction) in enumerate(zip(scenes, s["instructions"])):
             try:
-                edit_photo(folder, page, scene["id"], s["instruction"], llm)
-            except pg.ToolError:
-                pass  # keep the original photo (spec §4.1-5)
+                edit_photo(folder, page, scene["id"], instruction, llm, check=True)
+            except pg.ToolError:  # failed, rejected or unchecked
+                if i:  # an extra shot left on the original would only repeat the hero photo
+                    page["sections"].remove(scene)
+                # the main scene keeps the original photo (spec §4.1-5)
+        for i, sec in enumerate(page["sections"], 1):
+            sec["id"] = f"s{i}"
         return {"page": page}
 
     def first_message(s: DraftState) -> dict:

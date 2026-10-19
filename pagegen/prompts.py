@@ -104,6 +104,29 @@ COPY_SCHEMA = _object(
     details={"type": "array", "items": _object(headline=_T, body=_T)},
 )
 
+SCENES_SYSTEM = """너는 상세페이지 연출 컷 기획자다. 상품명·판매자 설명·사진 분석을 보고 JSON으로 답한다.
+- scenes는 '추가 장면 수'만큼 쓴다. 0이면 빈 목록이다.
+- 각 장면은 이 제품이 어울리는 배경이나 사용 장면이고, 대표 연출 장면과도 서로도 장소·시간·분위기가 겹치지 않는다.
+- photo_instruction은 업로드한 제품 사진의 배경과 주변을 바꾸는 지시 한 문장이다(예: "창가의 흰 대리석 선반 위"). 제품 자체는 바꾸지 않는다.
+- headline은 20자 이내, body는 한 문장으로 그 장면의 분위기나 쓰임을 쓴다.
+- 기능·성능·소재·크기·인증 같은 제품 사실은 판매자 설명과 사진 분석에 있는 것만 쓴다. 숫자는 판매자 설명에 있는 것만 쓴다.
+- "최고, 최상, 최초, 1위, 완벽, 유일, 최저가" 같은 최상급 표현은 판매자 설명에 없으면 쓰지 않는다.
+- closing.headline은 페이지를 마무리하는 한 문장(20자 이내)이다. 제품 사실을 새로 말하지 않는다."""
+
+SCENES_SCHEMA = _object(
+    scenes={"type": "array", "items": _object(photo_instruction=_T, headline=_T, body=_T)},
+    closing=_object(headline=_T),
+)
+
+# Spike 2026-10-19 on 18 real staged shots: rejected all 3 broken ones (box turned into a desk, purple flat
+# background, flames around a cup) and 2 of 15 good ones.
+SHOT_SYSTEM = """두 사진을 비교한다. 첫 번째는 상품 원본, 두 번째는 배경을 바꾼 연출 사진이다. JSON으로 답한다.
+- same_product: 두 번째 사진의 상품이 원본과 같은 물건이면 true. 다른 물건(예: 상자가 가구로)으로 바뀌었거나, 모양·색·무늬가 크게 달라졌거나, 형태가 녹아내리거나 일그러졌으면 false.
+- natural_scene: 두 번째 사진의 배경이 촬영 스튜디오나 실제 생활 공간처럼 자연스러우면 true. 형광색 단색 배경, 불꽃·번개·연기 같은 효과, 상품을 둘러싼 이상한 장식이 있으면 false."""
+
+SHOT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["same_product", "natural_scene"],
+               "properties": {"same_product": {"type": "boolean"}, "natural_scene": {"type": "boolean"}}}
+
 # One photo per call: asked about several photos at once, the 9B described one photo twice and the
 # captions no longer lined up with the photos (real 4-photo draft, 2026-10-16).
 CAPTION_SYSTEM = "사진 한 장에서 보이는 것만 한 문장으로 쓴다. 보이지 않는 소재·기능·용도는 추측하지 않는다."
